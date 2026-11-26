@@ -34,6 +34,7 @@ sock_t listener = BAD_SOCK;
 int the_port = 0;
 std::string the_key;
 bool started = false, ok = false;
+const char *SERVER_FILE = "server.json";   // the port and key, for the next OBS
 
 const size_t MAX_HEAD = 32 * 1024;
 const size_t MAX_BODY = 24 * 1024 * 1024;        // a character's sprite sheet or a sound from the editor
@@ -41,6 +42,8 @@ const size_t MAX_CHAT_BODY = 8 * 1024 * 1024;    // a chat page's report (a yank
 const size_t MAX_SETTINGS_BODY = 1 * 1024 * 1024;
 
 // The pages' files: only these, from the plugin's data/chat/, data/editor/ and data/settings/.
+// (The editor's script and styles load into the settings page; its index.html only sends an old
+// /editor/ link there.)
 struct File {
 	const char *dir, *name, *type;
 } FILES[] = {
@@ -167,12 +170,12 @@ HttpResp route(const HttpReq &r)
 {
 	HttpResp out;
 	// The website's "Open the character editor" link only knows the port: redirect to the editor
-	// with its key. serve() already rejected any other Host (see host_ok), so a rebinding page can't
-	// read the key.
+	// (the settings page's Characters view) with its key. serve() already rejected any other Host
+	// (see host_ok), so a rebinding page can't read the key.
 	if (r.method == "GET" && r.path == "/editor/open") {
 		out.status = 302;
 		out.type = "text/plain; charset=utf-8";
-		out.location = "/editor/?k=" + the_key;
+		out.location = "/settings/?k=" + the_key + "#characters";
 		return out;
 	}
 	// (?s=automod: opens on that page, for a pet; letters only)
@@ -186,7 +189,8 @@ HttpResp route(const HttpReq &r)
 		return out;
 	}
 	// (serve() checked the key of these before it read a body)
-	// The Update card on the settings page and in the editor (updater.cpp)
+	// The Update card on the settings page (updater.cpp). /editor/api/: an old editor page (from
+	// when the editor had its own) left open while OBSPETS updates; it reloads into the settings page.
 	if (r.path == "/settings/api/self-update" || r.path == "/editor/api/self-update")
 		return updater_api(r, r.path[1] == 's' ? "settings" : "editor");
 	if (r.path.rfind("/chat/api/", 0) == 0)
@@ -345,12 +349,23 @@ bool start()
 		warn("chat server: no sockets");
 		return false;
 	}
-	// Restarted by an update (updater.cpp): the same port and key as before, so the settings page
-	// and the editor that were open find OBS again by themselves. Else a new key, on any free port.
+	// The same port and key as the OBS before, so a settings page left open finds OBS
+	// again by itself: from the update handoff (updater.cpp) after an update, else from server.json
+	// (the key encrypted for this Windows user, like the sign-in). A new key only the first time,
+	// or if that file is gone or isn't ours; a new port if another program has taken the old one.
 	int want_port = 0;
 	std::string want_key;
 	bool resumed = updater_take_handoff(want_port, want_key) && want_key.size() == 64;
-	if (resumed) {
+	if (!resumed) {
+		want_port = 0;
+		want_key.clear();
+		Data d(obs_data_create_from_json_file_safe(config_path(SERVER_FILE).c_str(), "bak"));
+		if (!d || !unprotect(str(d.get(), "key"), want_key) || want_key.size() != 64)
+			want_key.clear();
+		else
+			want_port = (int)obs_data_get_int(d.get(), "port");
+	}
+	if (want_key.size() == 64) {
 		the_key = want_key;
 	} else {
 		std::random_device rd;   // (the OS's CSPRNG on MSVC)
@@ -375,7 +390,7 @@ bool start()
 		return l;
 	};
 	listener = BAD_SOCK;
-	if (resumed && want_port >= 1024 && want_port <= 65535)
+	if (want_port >= 1024 && want_port <= 65535)
 		for (int i = 0; i < 10 && listener == BAD_SOCK; i++) {   // (the old OBS may only just have let go)
 			if (i)
 				std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -396,6 +411,16 @@ bool start()
 	the_port = ntohs(a.sin_port);
 	if (resumed)
 		updater_resumed(same_port);
+	{   // for the next OBS
+		std::string sealed = protect(the_key);
+		if (!sealed.empty()) {
+			os_mkdirs(config_path("").c_str());
+			Data d = data_new();
+			obs_data_set_int(d.get(), "port", the_port);
+			obs_data_set_string(d.get(), "key", sealed.c_str());
+			obs_data_save_json_safe(d.get(), config_path(SERVER_FILE).c_str(), "tmp", "bak");
+		}
+	}
 	stopping = false;
 	acceptor = std::thread(accept_loop);
 	ok = true;

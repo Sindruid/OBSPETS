@@ -1,5 +1,5 @@
 -- Tabby: one of the six cats from LuizMelo's Pet Cats Pack (CC0), bundled with OBSPETS.
--- See LICENSE.txt. To change it, open it in the pet editor (a change saves your own copy).
+-- See LICENSE.txt. To change it, open it in OBSPETS Settings, Characters (a change saves your own copy).
 return {
 	name = "Tabby",
 	describe = "a small grey tabby pixel-art cat",

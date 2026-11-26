@@ -37,8 +37,8 @@ static bool play_file(Pet &d, const std::string &path)
 	return true;
 }
 
-// Chat moods can come every few seconds, so a mood only makes a voice sound `mood_gap` seconds
-// after its last one. Alerts and channel-point pets always do. Foley is never held back.
+// Chat moods can come every few seconds, so a mood only makes a voice sound twice the account's
+// time between reactions (10 s at least) after its last one. Alerts and channel-point pets always do. Foley is never held back.
 bool sound(Pet &d, const std::string &key, bool from_mood)
 {
 	if (!d.pack || d.hear == Hear::Off)
@@ -48,7 +48,7 @@ bool sound(Pet &d, const std::string &key, bool from_mood)
 		return false;
 	const SoundRole &snd = it->second;
 	bool voice = is_voice(key);
-	if (voice && from_mood && d.now - d.voiced < d.mood_gap)
+	if (voice && from_mood && d.now - d.voiced < std::max(10.0, 2 * Hub::get().ai_gap()))
 		return false;
 	if (!obs_source_active(d.source))   // only while it is on screen
 		return false;
@@ -1866,11 +1866,15 @@ void react(Pet &d)
 	if (d.has_mood && d.mode != Mode::Air && !d.busy && !d.has_alert) {
 		d.has_mood = false;
 		MoodReq m = d.next_mood;
-		if (d.now - m.at >= 12)
+		if (d.now - m.at >= 12) {
+			if (!m.test)
+				Hub::get().mood_not_shown(m.kind);
 			return;
+		}
 		if (!m.test && d.anim == "sleep" && d.mode == Mode::Ground && napped(d) < NAP_GRACE && !waker(m.kind) &&
 		    m.kind != "love" && m.kind != "sleepy") {
 			info("pet: mood %s (slept through it)", m.kind.c_str());
+			Hub::get().mood_not_shown(m.kind);
 			d.bobbing = true, d.bob = 0;
 			return;
 		}

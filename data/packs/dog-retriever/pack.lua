@@ -1,5 +1,5 @@
 -- Goldie: one of the six dogs from LuizMelo's Pet Dogs Pack (CC0), bundled with OBSPETS.
--- See LICENSE.txt. To change it, open it in the pet editor (a change saves your own copy).
+-- See LICENSE.txt. To change it, open it in OBSPETS Settings, Characters (a change saves your own copy).
 return {
 	name = "Goldie",
 	describe = "a golden retriever pixel-art dog",
@@ -17,11 +17,11 @@ return {
 		walk = { row = 4, frames = 8, fps = 10 },
 		run = { row = 5, frames = 8, fps = 13 },
 		sleep = { row = 6, frames = 1, fps = 1 },
-		paw = { row = 7, frames = 2, fps = 6, whoosh = 0, hit = 1 },
+		paw = { cells = { { 2, 8 }, { 4, 8 }, { 6, 8 }, { 4, 8 } }, fps = 10, whoosh = 1, hit = 2 },   -- a quick play-bow dip (row 7 is a front-on sit that clashes with every side-on frame)
 		-- a play-bow stretch: down, a moment at the bottom, back up
 		stretch = { cells = { { 0, 8 }, { 1, 8 }, { 2, 8 }, { 3, 8 }, { 4, 8 }, { 5, 8 }, { 6, 8 }, { 7, 8 }, { 8, 8 }, { 9, 8 }, { 9, 8 }, { 9, 8 }, { 9, 8 }, { 9, 8 }, { 8, 8 }, { 7, 8 }, { 6, 8 }, { 5, 8 }, { 4, 8 }, { 3, 8 }, { 2, 8 }, { 1, 8 }, { 0, 8 } }, fps = 11 },
 		call = { cells = { { 2, 1 }, { 0, 1 }, { 1, 1 }, { 0, 1 }, { 2, 1 } }, fps = 10 },   -- one bark
-		beg = { row = 7, frames = 2, fps = 3 },        -- sitting up nicely
+		beg = { cells = { { 0, 3 }, { 1, 3 }, { 2, 3 }, { 1, 3 } }, fps = 5 },   -- sitting nicely, panting
 		scared = { row = 1, frames = 3, fps = 12 },    -- no cowering frames: it barks at the fright
 		angry = { row = 1, frames = 3, fps = 12 },     -- barking hard
 	},

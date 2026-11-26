@@ -1,9 +1,11 @@
 // A stand-in for the plugin's editor API, to work on data/editor/ without OBS:
 //
 //   node tools/editor-dev.mjs [user packs folder]
-//   -> http://127.0.0.1:8798/editor/?k=dev
+//   -> http://127.0.0.1:8798/settings/?k=dev#characters
 //
-// It serves data/editor/ and answers /editor/api/... the way src/editor.cpp does, reading
+// The editor is the settings page's Characters view: this serves data/settings/ (with a settings
+// API that has no sources and no account; tools/settings-dev.mjs fakes those) and data/editor/,
+// and answers /editor/api/... the way src/editor.cpp does, reading
 // pack.lua with a small parser for the plain tables packs use. Built-in characters come from
 // data/packs/ (and ../../sources/pet/packs/ if it exists). Your packs default to .editor-dev/
 // (git-ignored). "Try it on stream" and "Show on my Pet" only log.
@@ -17,6 +19,7 @@ import { spawn } from 'node:child_process';
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, '..');
 const EDITOR = path.join(root, 'data', 'editor');
+const SETTINGS = path.join(root, 'data', 'settings');
 const BUILTIN = [path.join(root, 'data', 'packs'), path.resolve(root, '..', '..', 'sources', 'pet', 'packs')];
 const USER = path.resolve(process.argv[2] || path.join(root, '.editor-dev'));
 const PORT = 8798, KEY = 'dev';
@@ -337,9 +340,17 @@ createServer(async (req, res) => {
 			res.writeHead(status, { 'Content-Type': type || 'application/json', 'Cache-Control': 'no-store' });
 			return res.end(Buffer.isBuffer(out) ? out : JSON.stringify(out));
 		}
-		if (u.pathname.startsWith('/editor/')) {
-			const f = path.join(EDITOR, u.pathname.slice(8) || 'index.html');
-			if (f.startsWith(EDITOR) && fs.existsSync(f)) {
+		if (u.pathname === '/settings/api/state' || u.pathname === '/settings/api/fonts') {   // (just enough for the page)
+			res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+			return res.end(JSON.stringify(u.pathname.endsWith('fonts') ? { fonts: [] } : {
+				version: 'dev', backend: '', no_echo: true, default_bots: '', sources: [], picture_sources: [], packs: [],
+				account: { signed_in: false, linking: false, automod: [], ai_gap: 5, daily_cap: 0 },
+			}));
+		}
+		for (const [prefix, dir] of [['/editor/', EDITOR], ['/settings/', SETTINGS]]) {
+			if (!u.pathname.startsWith(prefix)) continue;
+			const f = path.join(dir, u.pathname.slice(prefix.length) || 'index.html');
+			if (f.startsWith(dir) && fs.existsSync(f)) {
 				res.writeHead(200, { 'Content-Type': TYPES[path.extname(f)] || 'application/octet-stream', 'Cache-Control': 'no-store' });
 				return res.end(fs.readFileSync(f));
 			}
@@ -349,4 +360,4 @@ createServer(async (req, res) => {
 		console.error(err);
 		res.writeHead(500, { 'Content-Type': 'application/json' }).end(JSON.stringify({ error: err.message }));
 	}
-}).listen(PORT, '127.0.0.1', () => console.log(`http://127.0.0.1:${PORT}/editor/?k=${KEY}  (your packs: ${USER})`));
+}).listen(PORT, '127.0.0.1', () => console.log(`http://127.0.0.1:${PORT}/settings/?k=${KEY}#characters  (your packs: ${USER})`));

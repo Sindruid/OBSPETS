@@ -1,5 +1,6 @@
-// The character editor: a page (data/editor/) on the loopback server (chat-server.cpp) where
-// streamers make their own characters one animation and one sound at a time. The page does the
+// The character editor: the Characters view of the settings page (data/settings/index.html, with
+// data/editor/editor.js and editor.css) on the loopback server (chat-server.cpp), where streamers
+// make their own characters one animation and one sound at a time. The page does the
 // image and audio work itself (slicing, the sprite sheet, trimming, loudness) and writes the
 // finished files through editor_api(), only into the user's own packs folder.
 #pragma once
@@ -13,7 +14,8 @@ namespace obspet {
 // every /editor/api/... request with the right key (any thread)
 HttpResp editor_api(const HttpReq &r);
 
-// opens the editor in the default browser, on character `pack` (or the list, if empty)
+// opens the settings page in the default browser on its Characters view, on character `pack` (or
+// the one on stream, if empty)
 void open_editor(const std::string &pack);
 
 } // namespace obspet

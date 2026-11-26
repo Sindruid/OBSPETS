@@ -1,7 +1,6 @@
 // OBSPETS Chat (see chat-source.hpp).
 #include "chat-source.hpp"
 #include "chat-server.hpp"
-#include "editor.hpp"
 #include "hub.hpp"
 #include "pet.hpp"
 #include "settings.hpp"
@@ -228,7 +227,7 @@ void ChatSource::defaults(obs_data_t *s)
 	obs_data_set_default_bool(s, "test", false);
 	obs_data_set_default_bool(s, "history", false);
 	obs_data_set_default_int(s, "max", 30);
-	obs_data_set_default_int(s, "fade", 0);
+	obs_data_set_default_int(s, "fade", 30);
 	obs_data_set_default_string(s, "order", "up");
 	obs_data_set_default_string(s, "align", "left");
 	obs_data_set_default_string(s, "anim", "slide");
@@ -540,12 +539,6 @@ obs_properties_t *ChatSource::properties()
 		return false;
 	});
 	obs_property_set_long_description(open_set, "Opens OBSPETS Chat Settings in your browser, with a live preview. Changes save automatically.");
-
-	obs_property_t *ed = obs_properties_add_button(p, "open_editor", "Open pet editor", [](obs_properties_t *, obs_property_t *, void *) {
-		open_editor("");
-		return false;
-	});
-	obs_property_set_long_description(ed, "Opens the pet editor in your browser to customize or create characters.");
 
 	return p;
 }

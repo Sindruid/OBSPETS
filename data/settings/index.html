@@ -7,6 +7,7 @@
 <meta name="theme-color" content="#0a0a0a">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 32 32%27%3E%3Crect width=%2732%27 height=%2732%27 fill=%27%230a0a0a%27/%3E%3Cg fill=%27%23e24b1a%27%3E%3Cellipse cx=%2716%27 cy=%2721.5%27 rx=%277%27 ry=%276%27/%3E%3Cellipse cx=%277.5%27 cy=%2714%27 rx=%272.6%27 ry=%273.3%27/%3E%3Cellipse cx=%2712.5%27 cy=%278.5%27 rx=%272.7%27 ry=%273.5%27/%3E%3Cellipse cx=%2719.5%27 cy=%278.5%27 rx=%272.7%27 ry=%273.5%27/%3E%3Cellipse cx=%2724.5%27 cy=%2714%27 rx=%272.6%27 ry=%273.3%27/%3E%3C/g%3E%3C/svg%3E">
 <link rel="stylesheet" href="settings.css">
+<link rel="stylesheet" href="/editor/editor.css">
 </head>
 <body>
 <header class="top">
@@ -14,17 +15,41 @@
 		<h1 class="title">OBSPETS</h1>
 		<span class="tag-sub">Settings</span>
 	</div>
+	<!-- the page's two views: the OBS sources' settings, and the character editor -->
+	<nav id="viewSwitch" class="view-switch" aria-label="View">
+		<button type="button" data-view="sources" class="on">Sources</button>
+		<button type="button" data-view="characters">Characters</button>
+	</nav>
 	<div id="sourceBar" class="source-bar"></div>
+	<div id="edPicker" class="ed ed-picker" hidden>
+		<select id="pack" aria-label="Character"></select>
+		<button id="gallery" type="button" class="ghost small">All characters</button>
+		<button id="new" type="button" class="ghost small">+ New</button>
+	</div>
 	<div class="grow"></div>
 	<span id="saved" class="saved"></span>
+	<span id="edSaved" class="saved" hidden></span>
 	<span id="updateSlot"></span>
 	<button id="acctPill" class="acct-pill" title="Account &amp; sign-in">
 		<span class="dot"></span>
 		<span class="acct-label">Account</span>
 	</button>
-	<a id="editorLink" class="btn ghost" href="#" target="_blank" rel="noopener">Pet editor &#8599;</a>
+	<div id="edActions" class="ed ed-actions" hidden>
+		<button id="use" type="button" class="primary" hidden>Show on my Pet</button>
+		<div class="menu-wrap">
+			<button id="more" type="button" class="ghost icon" aria-label="More" title="More">&#8943;</button>
+			<div id="menu" class="menu" hidden>
+				<button type="button" data-act="copy">Make a copy</button>
+				<button type="button" data-act="export">Export to a file</button>
+				<button type="button" data-act="import">Import from a file&#8230;</button>
+				<hr>
+				<button type="button" data-act="remove" class="danger">Delete this character</button>
+			</div>
+		</div>
+	</div>
 </header>
 
+<!-- ============================================================ Sources view (settings.js) -->
 <div id="banners" class="banners"></div>
 
 <main id="app" class="layout">
@@ -34,10 +59,171 @@
 
 <div id="emptyState" class="empty-page" hidden></div>
 
+<!-- ============================================================ Characters view (/editor/editor.js) -->
+<div id="editorView" class="ed" hidden>
+	<div class="banners"><div id="edBanner" class="banner" hidden></div></div>
+
+	<main id="edApp" class="layout ed-layout">
+		<aside class="rail">
+			<div class="stage-card">
+				<div class="stage">
+					<canvas id="stage" width="480" height="360"></canvas>
+					<div class="stage-labels" id="stageLabels" aria-hidden="true"></div>
+					<div class="stage-empty" id="stageEmpty" hidden>
+						<div class="big">Drop your <b>sprite sheet</b> to start</div>
+						<div class="muted">One image with every animation, or just an idle one: a PNG strip, a GIF, or several frames at once.</div>
+					</div>
+				</div>
+				<div class="stage-bar">
+					<span id="playing" class="playing"></span>
+					<div class="grow"></div>
+					<button id="hear" type="button" class="ghost small" title="Play each of its voice sounds, with its animations">&#9654; Hear it</button>
+					<button id="turn" type="button" class="ghost small" title="Turn it around">Flip</button>
+					<button id="guides" type="button" class="ghost small" title="Show the body guides">Guides</button>
+					<button id="bg" type="button" class="ghost small" title="Change the background">Bg</button>
+					<button id="zoomOut" type="button" class="ghost small zoom" aria-label="Smaller" title="Smaller">&minus;</button>
+					<button id="zoomIn" type="button" class="ghost small zoom" aria-label="Bigger" title="Bigger">+</button>
+				</div>
+			</div>
+
+			<nav id="edNav" class="rail-nav" aria-label="Character">
+				<button type="button" data-tab="anims" class="on"><span>Animations</span><span class="nav-badge" id="navAnims" hidden></span></button>
+				<button type="button" data-tab="sounds"><span>Sounds</span></button>
+				<button type="button" data-tab="details"><span>Details</span></button>
+				<button type="button" data-tab="colors"><span>Colors</span></button>
+			</nav>
+
+			<div class="test-pad">
+				<div class="test-pad-head"><span class="test-pad-title">Try it in OBS</span></div>
+				<div class="inline-stretch">
+					<select id="trySel" aria-label="Reaction to try"></select>
+					<button id="tryGo" type="button">Play</button>
+				</div>
+			</div>
+		</aside>
+
+		<section class="content">
+			<div class="tab" id="tab-anims">
+				<div class="sec-head">
+					<div>
+						<h2 class="sec-title">Animations</h2>
+						<p class="sec-sub">Drop an image on a tile, or click one to see and tune it.</p>
+					</div>
+				</div>
+				<div class="sheet-bar" id="sheetBar" hidden></div>
+				<section class="card">
+					<div class="card-hd"><h3>Everyday</h3><span class="card-desc">Idle is the one it needs. The rest borrow it until they're here.</span></div>
+					<div class="card-pad"><div class="slots" id="slots"></div></div>
+				</section>
+				<section class="card">
+					<div class="card-hd"><h3>For reactions</h3><span class="card-desc">No borrowing: a reaction stays off until its animation is here, or one stands in.</span></div>
+					<div class="card-pad"><div class="slots" id="slotsReact"></div></div>
+				</section>
+				<section class="card">
+					<div class="card-hd"><h3>Jump poses</h3><span class="card-desc">Single frames held mid-jump.</span></div>
+					<div class="card-pad"><div class="slots poses" id="poses"></div></div>
+				</section>
+				<section class="card">
+					<div class="card-pad"><div class="inspector" id="inspector"></div></div>
+				</section>
+			</div>
+
+			<div class="tab" id="tab-sounds" hidden>
+				<div class="sec-head">
+					<div>
+						<h2 class="sec-title">Sounds</h2>
+						<p class="sec-sub">Drop a sound on a row, or click <b>+ Add</b>. Any format works. Each one is trimmed and set to a stream-friendly volume.</p>
+					</div>
+				</div>
+				<section class="card">
+					<div class="card-pad"><div class="role soundset" id="soundset"></div></div>
+				</section>
+				<section class="card">
+					<div class="card-hd"><h3>Voice</h3><span class="card-desc">What it says to chat and alerts.</span></div>
+					<div class="list roles" id="voice"></div>
+				</section>
+				<section class="card">
+					<div class="card-hd"><h3>Body</h3><span class="card-desc">Swats, landings, and the chat lines it flings.</span></div>
+					<div class="list roles" id="foley"></div>
+				</section>
+			</div>
+
+			<div class="tab" id="tab-details" hidden>
+				<div class="sec-head">
+					<div>
+						<h2 class="sec-title">Details</h2>
+						<p class="sec-sub">Who it is, and how its body and movement work.</p>
+					</div>
+				</div>
+				<section class="card">
+					<div class="card-hd"><h3>About</h3></div>
+					<div class="card-body">
+						<div class="row-item">
+							<div><div class="row-label"><label for="f-name">Name</label></div></div>
+							<div class="row-ctrl"><input id="f-name" maxlength="40"></div>
+						</div>
+						<div class="row-item">
+							<div><div class="row-label"><label for="f-describe">What it is</label></div><div class="row-hint">Chat reactions use this to know what your pet is.</div></div>
+							<div class="row-ctrl"><input id="f-describe" maxlength="160" placeholder="a small orange pixel-art fox"></div>
+						</div>
+						<div class="row-item stack">
+							<div><div class="row-label"><label for="f-personality">Personality</label></div><div class="row-hint">How it behaves, and what it loves and fears. Chat reactions follow this.</div></div>
+							<div class="row-ctrl"><textarea id="f-personality" maxlength="500" rows="3" placeholder="playful and nosy, a show-off, scared of thunder"></textarea></div>
+						</div>
+						<div class="row-item">
+							<div><div class="row-label"><label for="f-pronouns">Pronouns</label></div></div>
+							<div class="row-ctrl"><select id="f-pronouns"><option value="">they</option><option>he</option><option>she</option><option>it</option></select></div>
+						</div>
+						<div class="row-item">
+							<div><div class="row-label">Your drawings face</div><div class="row-hint">Which way the pet looks in your sprite sheet.</div></div>
+							<div class="row-ctrl"><div class="seg" id="f-faces"><button type="button" data-v="right">Right</button><button type="button" data-v="left">Left</button></div></div>
+						</div>
+					</div>
+				</section>
+				<section class="card">
+					<div class="card-hd">
+						<div><h3>Body</h3><span class="card-desc">Where hearts, marks and sparks appear, and how close it walks to things. Turn on <b>Guides</b> under the preview to see them.</span></div>
+						<label class="toggle-label"><span>Measure from the animations</span><span class="toggle"><input type="checkbox" id="f-auto"><span class="toggle-track"></span></span></label>
+					</div>
+					<div class="card-pad"><div id="bodyFields" class="grid2"></div></div>
+				</section>
+				<section class="card">
+					<div class="card-hd"><h3>Movement</h3><button id="speedReset" type="button" class="ghost small">Reset</button></div>
+					<div class="card-pad">
+						<div id="speedFields" class="grid2"></div>
+						<p class="muted small" id="cellInfo"></p>
+					</div>
+				</section>
+			</div>
+
+			<div class="tab" id="tab-colors" hidden>
+				<div class="sec-head">
+					<div>
+						<h2 class="sec-title">Colors</h2>
+						<p class="sec-sub">Change the pet's own colors without redrawing it, and pick the colors of the little marks it draws around itself.</p>
+					</div>
+				</div>
+				<section class="card">
+					<div class="card-hd"><h3>The pet</h3></div>
+					<div class="list colors" id="look"></div>
+				</section>
+				<section class="card">
+					<div class="card-hd"><h3>Marks</h3><span class="card-desc">Hearts, sparks, z's and the rest.</span></div>
+					<div class="list colors" id="colors"></div>
+				</section>
+			</div>
+		</section>
+	</main>
+</div>
+
 <div id="modal" class="modal" hidden><div class="dialog" id="dialog"></div></div>
+<div id="edModal" class="modal ed" hidden><div class="dialog" id="edDialog"></div></div>
 <div id="toast" class="toast" hidden></div>
+<div id="dropHint" class="drop-hint ed" hidden><div>Drop to add</div></div>
+<input type="file" id="filePick" hidden multiple>
 
 <script src="settings.js"></script>
+<script type="module" src="/editor/editor.js"></script>
 <script src="/update/update.js"></script>
 </body>
 </html>

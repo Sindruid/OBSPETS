@@ -1,4 +1,4 @@
-// OBSPETS's Update card, on the settings page and in the character editor (both load this file).
+// OBSPETS's Update card, on the settings page.
 // It asks the plugin (src/updater.cpp) whether a newer OBSPETS is out. Clicking it explains what
 // happens, then the plugin downloads the installer, Windows asks for permission, OBS closes, the
 // installer updates OBSPETS and opens OBS again. Meanwhile this page waits; the new OBS listens on
@@ -12,8 +12,7 @@
 (() => {
 	const KEY = new URLSearchParams(location.search).get('k') || '';
 	if (!KEY) return;
-	const PAGE = location.pathname.startsWith('/editor') ? 'editor' : 'settings';
-	const API = `/${PAGE}/api/self-update`;
+	const API = '/settings/api/self-update';
 	const FLAG = 'obspet-updating';   // sessionStorage: this tab saw an update start (-> its version)
 	const hooks = () => window.OBSPET_UPDATE_HOOKS || {};
 
@@ -97,6 +96,11 @@
 		restarted = false;
 		const updated = !!(store.get() || mine || s.updated_from || s.failed_to);
 		if (!updated) {
+			// OBS restarted on the same address: reload so the page sees this OBS's scenes and sources
+			if (!hooks().canReload || hooks().canReload() !== false) {
+				location.reload();
+				return;
+			}
 			render();
 			schedule();
 			return;
@@ -152,7 +156,9 @@
 		if ((gone || restarted || reloadWaiting) && (mine || store.get())) {
 			show = true; cls += ' busy'; label = 'Updating OBSPETS'; sub = reloadWaiting ? 'Reload to finish' : 'OBS restarts';
 		} else if (gone) {
-			show = true; cls += ' warn'; label = "Can't reach OBS"; sub = 'Reconnecting';
+			// (after a while: OBS may be on another address now, which only OBS can give out)
+			show = true; cls += ' warn'; label = "Can't reach OBS";
+			sub = Date.now() - gone > 20000 ? 'Open it again from OBS: Tools → OBSPETS' : 'Reconnecting';
 		} else if (s && busy(s.phase)) {
 			show = true; cls += ' busy'; label = 'Updating OBSPETS'; sub = phaseShort(s);
 		} else if (s && s.available) {
@@ -383,7 +389,7 @@
 .upd-overlay { position: fixed; inset: 0; z-index: 200; background: rgba(0,0,0,.72); backdrop-filter: blur(4px);
 	display: flex; align-items: center; justify-content: center; padding: 20px; }
 .upd-overlay[hidden] { display: none; }
-.upd-dialog { width: min(480px, 100%); background: var(--panel, #111); border: 1px solid var(--line2, rgba(255,255,255,.14));
+.upd-dialog { width: min(480px, 100%); max-height: calc(100vh - 40px); overflow: auto; overflow-wrap: anywhere; background: var(--panel, #111); border: 1px solid var(--line2, rgba(255,255,255,.14));
 	border-radius: var(--radius, 0); padding: 22px 22px 18px; box-shadow: 0 24px 60px rgba(0,0,0,.6); }
 .upd-dialog h2 { margin: 0 0 6px; font-size: 20px; font-weight: 650; letter-spacing: -0.03em; }
 .upd-sub { color: var(--muted); margin: 0 0 12px; font-size: 13.5px; }
@@ -391,7 +397,7 @@
 .upd-list li { margin: 2px 0; }
 .upd-note { margin-top: 12px; padding: 9px 11px; font-size: 13px; border: 1px solid var(--line2, rgba(255,255,255,.14)); }
 .upd-note.warn { border-color: rgba(232,180,76,.45); background: rgba(232,180,76,.10); color: var(--text); }
-.upd-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+.upd-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; margin-top: 18px; }
 .upd-grow { flex: 1; }
 .upd-small { color: var(--muted); font-size: 12.5px; }
 .upd-small:hover { color: var(--text); }

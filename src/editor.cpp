@@ -642,9 +642,10 @@ void open_editor(const std::string &pack)
 {
 	if (!chat_server::start())
 		return;
-	std::string url = chat_server::base_url() + "/editor/?k=" + chat_server::key();
-	if (!pack.empty())
-		url += "#" + pack;
+	// the editor is the settings page's Characters view (#character:<id>, or #characters for the
+	// one it picks); ids are [a-z0-9_-], so they go in the URL as they are
+	std::string url = chat_server::base_url() + "/settings/?k=" + chat_server::key();
+	url += good_id(pack) ? "#character:" + pack : std::string("#characters");
 	open_url(url);
 }
 

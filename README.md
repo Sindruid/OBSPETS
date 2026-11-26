@@ -6,7 +6,7 @@ It adds:
 
 - **OBSPETS** (`obspet`): the pet source.
 - **OBSPETS Chat** (`obspet_chat`): an on-screen Twitch and Kick chat the pet can sit on and pull messages out of.
-- Two items in the **Tools** menu: **OBSPETS: Add a pet to this scene** and **OBSPETS: Pet editor**.
+- Two items in the **Tools** menu: **OBSPETS: Add a pet to this scene** and **OBSPETS: Settings**. The settings page has two views: **Sources** (each OBSPETS and OBSPETS Chat source) and **Characters** (the character editor).
 
 Characters are packs of a `pack.lua`, a sprite sheet and optional sounds (see `data/packs/README.md`).
 
@@ -23,10 +23,10 @@ The build is based on [obs-plugintemplate](https://github.com/obsproject/obs-plu
 |---|---|
 | `src/` | The plugin. `plugin-main` registers everything. `pet-source.cpp`, `pet.cpp` and `pet-render.cpp` are the pet source, its behavior and its drawing. `chat-source.cpp` is OBSPETS Chat, and `chat-server.cpp` is the loopback HTTP server its page talks back to. `editor.cpp` is the character editor's API. `updater.cpp` is the Update card. `pack.cpp` loads packs. `hub.cpp` holds the account, Twitch EventSub, Kick's chat socket and chat reactions. `net.cpp` does HTTP and WebSockets over OBS's libcurl. |
 | `deps/lua/` | Lua 5.4.7's library (MIT), built as a static library and used only to read `pack.lua` in a sandbox. Don't edit it. |
-| `data/` | Installed to `obspet/data/`: `locale/`, OBSPETS Chat's page (`chat/`), the character editor (`editor/`), the settings page (`settings/`), the Update card both pages load (`update/`), the bundled packs (`packs/`) and the built-in sounds (`sounds/`, see `data/sounds/SOURCES.md`). |
+| `data/` | Installed to `obspet/data/`: `locale/`, OBSPETS Chat's page (`chat/`), the settings page (`settings/`), the character editor that is its Characters view (`editor/`: its script and styles, which the settings page loads), the Update card (`update/`), the bundled packs (`packs/`) and the built-in sounds (`sounds/`, see `data/sounds/SOURCES.md`). |
 | `tools/package.py` | Builds the installer and the zip. |
 | `tools/fake-updater.mjs` | A pretend update for the dev servers, to work on the Update card (`data/update/`) without OBS: `FAKE_UPDATE=9.9.0 node tools/settings-dev.mjs` (see the file for failures and the other states). |
-| `tools/editor-dev.mjs` | Serves the character editor with a fake API, to work on `data/editor/` without OBS (`node tools/editor-dev.mjs`). |
+| `tools/editor-dev.mjs` | Serves the settings page's Characters view with a fake editor API, to work on `data/editor/` without OBS (`node tools/editor-dev.mjs`). |
 | `tools/installer/` | The Inno Setup installer (`obspet.iss`) and its art (`make-art.py`). |
 | `tools/zip/` | The text files that ship in the zip. |
 
@@ -47,7 +47,7 @@ OBSPETS Chat is the page in `data/chat/`, loaded in a private browser source.
 - Chatters it hides are also ignored by its pet.
 - It has the usual overlay options: fonts, colors, outline, readable name colors, badges, pronouns (pronouns.alejo.io), 7TV/BTTV/FFZ emotes, highlights, filters, history on load (recent-messages.robotty.de), animations and custom CSS.
 - **Plugin to page:** obs-browser's `javascript_event`, with the events `obspet_config`, `obspet_yank`, `obspet_yank_done`, `obspet_strike` and `obspet_line`.
-- **Page to plugin:** a browser source can't call into a plugin, so `chat-server.cpp` listens on `127.0.0.1` on a free port. It serves `data/chat/` and `data/editor/`, and takes `POST /chat/api/report` (where the messages are, and a picture of the line the pet is about to yank). API calls need the per-run key the page gets in its URL.
+- **Page to plugin:** a browser source can't call into a plugin, so `chat-server.cpp` listens on `127.0.0.1` on a free port. It serves `data/chat/`, `data/settings/` and `data/editor/`, and takes `POST /chat/api/report` (where the messages are, and a picture of the line the pet is about to yank). API calls need the per-run key the page gets in its URL.
 
 ## Pet properties
 
@@ -67,7 +67,7 @@ Settings saved by versions before 0.5 are migrated when a pet loads.
 
 ## Updating from inside OBS
 
-The settings page and the character editor show an **Update available** card when sindruid.com has a newer OBSPETS (`src/updater.cpp`, `data/update/update.js`). The plugin asks `GET /streamtools/api/pet/update` soon after OBS starts and every 6 hours.
+The settings page shows an **Update available** card when sindruid.com has a newer OBSPETS (`src/updater.cpp`, `data/update/update.js`). The plugin asks `GET /streamtools/api/pet/update` soon after OBS starts and every 6 hours.
 
 Clicking the card explains what happens. **Update and restart OBS** then:
 

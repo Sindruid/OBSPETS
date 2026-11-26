@@ -1,5 +1,7 @@
-// OBSPETS character editor. Served by the plugin on 127.0.0.1 (src/editor.cpp); every request
-// carries the per-run key from this page's URL.
+// OBSPETS character editor: the Characters view of the settings page (data/settings/), loaded there
+// as a module so its names stay apart from settings.js. settings.js switches views and calls
+// window.OBSPET_EDITOR (bottom of this file). The plugin's side is src/editor.cpp; every request
+// carries the per-run key from the page's URL.
 //
 // A character made here is a folder of plain files:
 //   pack.json            what the editor knows (frames, speed, nudges, sounds, details)
@@ -167,7 +169,7 @@ function toast(msg, err = false) {
 
 async function api(what, params = {}, init = {}) {
 	const q = new URLSearchParams({ ...params, k: KEY });
-	const r = await fetch(`api/${what}?${q}`, init);
+	const r = await fetch(`/editor/api/${what}?${q}`, init);
 	if (!r.ok) {
 		let why = r.statusText;
 		try { why = (await r.json()).error || why; } catch { /* not json */ }
@@ -476,7 +478,7 @@ function buildLua(where, cw, ch) {
 	m.body.paw = [luaNum(m0.body.paw?.[0]), luaNum(m0.body.paw?.[1])];
 	const sp = { walk: luaNum(sp0.walk, sp0.def.walk), run: luaNum(sp0.run, sp0.def.run) };
 	const L = [];
-	L.push('-- Made with the OBSPETS character editor (Open pet editor, in the Pet\'s properties).');
+	L.push('-- Made with the OBSPETS character editor (OBSPETS Settings, Characters).');
 	L.push('-- Change it there: the editor writes this file again from pack.json every time it saves.');
 	L.push('return {');
 	L.push(`\tname = ${luaStr(p.name)},`);
@@ -547,7 +549,7 @@ function changed(sheet = true) {
 	paint();
 }
 function setSaved(cls, text) {
-	const el = $('#saved');
+	const el = $('#edSaved');
 	el.className = 'saved ' + (cls || '');
 	el.textContent = text || '';
 }
@@ -650,7 +652,7 @@ async function openPack(id) {
 	S.scrub = -1;
 	stopHearing();
 	stopSound();
-	history.replaceState(null, '', '#' + id);
+	setHash(id);
 	$('#pack').value = id;
 	setSaved('', '');
 	let info;
@@ -747,24 +749,28 @@ async function convert(info) {
 }
 
 function showBanner() {
-	const b = $('#banner');
+	const b = $('#edBanner');
 	const info = S.info;
 	b.replaceChildren();
 	b.hidden = S.editable && !S.builtin;
 	if (b.hidden) return;
+	// (the settings page's banner: a title line, a muted line under it, buttons on the right)
+	const body = (title, sub) => h('div', { class: 'banner-body' }, h('div', { class: 'banner-title', text: title }), h('div', { class: 'banner-sub', text: sub }));
+	const btns = (...kids) => h('div', { class: 'banner-actions' }, ...kids);
+	b.className = 'banner' + (info.error ? ' err' : '');
 	if (S.builtin && S.packs.find((p) => p.id === S.id)?.folder) {
-		b.append(h('div', { class: 'grow', html: `<b>${escapeHtml(S.pack.name)}</b> comes from a folder your Pet uses. Change anything and it's saved as your own copy. The folder stays as it was.` }));
+		b.append(body(`${S.pack.name} comes from a folder your Pet uses`, "Change anything and it's saved as your own copy. The folder stays as it was."));
 	} else if (S.builtin) {
-		b.append(h('div', { class: 'grow', html: `<b>${escapeHtml(S.pack.name)}</b> is built in. Change anything and it's saved as your own copy. The built-in one stays as it was.` }));
+		b.append(body(`${S.pack.name} comes with OBSPETS`, "Change anything and it's saved as your own copy. The built-in one stays as it was."));
 	} else if (info.error) {
-		b.append(h('div', { class: 'grow', text: `This character doesn't load: ${info.error}` }));
+		b.append(body("This character doesn't load", info.error));
 	} else if (!info.user) {
-		b.append(h('div', { class: 'grow', html: `<b>${escapeHtml(S.pack.name)}</b> is built in. Make your own copy to change it.` }),
-			h('button', { class: 'primary', text: 'Make a copy', onclick: () => makeCopy() }));
+		b.append(body(`${S.pack.name} comes with OBSPETS`, 'Make your own copy to change it.'),
+			btns(h('button', { class: 'primary small', text: 'Make a copy', onclick: () => makeCopy() })));
 	} else {
-		b.append(h('div', { class: 'grow', html: `<b>${escapeHtml(S.pack.name)}</b> was written by hand (pack.lua). Edit it here and the editor takes it over; its old files are kept in its <b>.history</b> folder.` }),
-			h('button', { text: 'Make a copy', onclick: () => makeCopy() }),
-			h('button', { class: 'primary', text: 'Edit it here', onclick: () => takeOver() }));
+		b.append(body(`${S.pack.name} was written by hand (pack.lua)`, 'Edit it here and the editor takes it over; its old files are kept in its .history folder.'),
+			btns(h('button', { class: 'small', text: 'Make a copy', onclick: () => makeCopy() }),
+				h('button', { class: 'primary small', text: 'Edit it here', onclick: () => takeOver() })));
 	}
 }
 const escapeHtml = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
@@ -913,7 +919,7 @@ async function ownCopy() {
 		S.id = id;
 		S.builtin = false;
 		S.info = { ...S.info, id, user: true, editor: true };
-		history.replaceState(null, '', '#' + id);
+		setHash(id);
 		if (wasOn) await post('use', { id });
 		await refreshPacks();
 		showBanner();
@@ -1075,7 +1081,7 @@ async function exportPack() {
 		await add('sheet.png', await blobOf(b.canvas));
 		const a = h('a', { href: URL.createObjectURL(zip(files)), download: `${slug(S.pack.name)}.zip` });
 		a.click();
-		toast('Saved as a .zip. Import it in the editor, or unzip it into a characters folder.');
+		toast('Saved as a .zip. Import it here (⋯ → Import from a file), or unzip it into a characters folder.');
 	} catch (e) {
 		toast("Couldn't export it: " + e.message, true);
 	}
@@ -1127,14 +1133,14 @@ async function importZip(file) {
 // ------------------------------------------------------------------ the modal
 
 function openModal(...kids) {
-	$('#dialog').replaceChildren(...kids);
-	$('#modal').hidden = false;
+	$('#edDialog').replaceChildren(...kids);
+	$('#edModal').hidden = false;
 }
 function closeModal() {
-	$('#modal').hidden = true;
-	$('#dialog').replaceChildren();
+	$('#edModal').hidden = true;
+	$('#edDialog').replaceChildren();
 	modalTick = null;
-	$('#dialog').className = 'dialog';
+	$('#edDialog').className = 'dialog';
 }
 let modalTick = null;
 
@@ -1375,6 +1381,24 @@ function tightStrip(frames, center = null) {
 	return { strip: out, n: frames.length };
 }
 
+// How big a sheet is drawn in a dialog: as big as fits in maxW × maxH (whole steps when it's
+// enlarged, so the pixels stay square). A long thin strip, or a sheet of many tiny cells, would
+// shrink to slivers that can't be clicked: that one is drawn readable instead, and its view scrolls.
+// `cell`: the smaller side of one cell, as first guessed.
+function sheetScale(sheet, maxW, maxH, cap, cell) {
+	const fit = Math.min(maxW / sheet.width, maxH / sheet.height);
+	const s = fit >= 2 ? Math.min(cap, Math.floor(fit)) : fit;
+	const need = Math.max(96 / Math.min(sheet.width, sheet.height), 24 / Math.max(1, cell));
+	if (s >= need) return { scale: s, scroll: false };
+	return { scale: Math.min(cap, Math.ceil(need)), scroll: true };
+}
+// the canvas a sheet is drawn on: one that fits also shrinks with a narrow window; one that scrolls keeps its size
+function sheetCanvas(sheet, z) {
+	const c = canvas(Math.round(sheet.width * z.scale), Math.round(sheet.height * z.scale));
+	if (!z.scroll) c.classList.add('fit');
+	return c;
+}
+
 // The import dialog: the image with its grid; click the first frame, then the last.
 function frameDialog({ title, src, frames, fps, single, cols, rows }) {
 	return new Promise((resolve) => {
@@ -1397,9 +1421,10 @@ function frameDialog({ title, src, frames, fps, single, cols, rows }) {
 			st.b = b;
 		};
 		defaultSel();
-		const fit = Math.min(680 / sheet.width, 500 / sheet.height);
-		const scale = fit >= 2 ? Math.min(8, Math.floor(fit)) : fit;
-		const view = canvas(sheet.width * scale, sheet.height * scale);
+		// the space left of the side column (the dialog is 760 px)
+		const z = sheetScale(sheet, 540, 460, 8, Math.min(cw(), chh()));
+		const scale = z.scale;
+		const view = sheetCanvas(sheet, z);
 		const pxIn = h('select', {}, ...[1, 2, 3, 4, 5, 6, 8].map((k) => h('option', { value: k, text: k === 1 ? '1× (as drawn)' : `${k}× (shrink it)` })));
 		const detectPx = () => {
 			const fr = chosen();
@@ -1734,9 +1759,9 @@ function sheetDialog({ sheet, name, focus, prev }) {
 		};
 
 		// the sheet, as big as fits
-		const fit = Math.min(1000 / sheet.width, 360 / sheet.height);
-		const scale = fit >= 2 ? Math.min(10, Math.floor(fit)) : fit;
-		const view = canvas(sheet.width * scale, sheet.height * scale);
+		const z = sheetScale(sheet, 1000, 360, 10, Math.min(cw(), chh()));
+		const scale = z.scale;
+		const view = sheetCanvas(sheet, z);
 		const hint = h('div', { class: 'mhint' });
 		const chips = h('div', { class: 'mchips' });
 		const fpsBox = h('div', { class: 'mfps' });
@@ -1991,7 +2016,7 @@ function sheetDialog({ sheet, name, focus, prev }) {
 				h('div', { class: 'grow' }),
 				h('button', { text: 'Cancel', onclick: () => done(null) }), useBtn),
 		);
-		$('#dialog').className = 'dialog wide';
+		$('#edDialog').className = 'dialog wide';
 		refresh();
 	});
 }
@@ -2402,7 +2427,7 @@ async function soundDialog(role, ab, name, replacing) {
 			h('h2', { text: `${replacing ? 'Change' : 'Add'} a “${label}” sound` }),
 			h('p', { class: 'sub', text: 'Drag the green handles to trim it. It’s set to the same loudness as the other sounds for you.' }),
 			box, meter,
-			h('div', { class: 'row', style: 'margin-top:14px;gap:16px' }, playBtn,
+			h('div', { class: 'row', style: 'margin-top:14px;gap:10px 16px;flex-wrap:wrap' }, playBtn,
 				h('label', { class: 'grow', style: 'display:flex;align-items:center;gap:10px;color:var(--muted)' }, 'Volume', vol, volVal),
 				h('button', { class: 'ghost small', text: 'Trim silence', onclick: () => { [a, b] = autoTrim(ch); draw(); } })),
 			h('label', { class: 'form', style: 'padding:0;margin-top:14px' }, 'Name', nameIn),
@@ -2588,7 +2613,10 @@ function drawStage(t) {
 		x.translate(W, 0);
 		x.scale(-1, 1);
 	}
-	const f = frameNow(S.show?.k || S.sel, t);
+	// a reaction (or the call) with nothing drawn and no stand-in never borrows: show nothing, like its tile
+	const def = ANIMS.find((a) => a.k === S.sel);
+	const off = !S.show && def && (def.group === 'reaction' || S.sel === 'call') && !hasOrStand(S.sel);
+	const f = off ? null : frameNow(S.show?.k || S.sel, t);
 	if (S.ghost && !S.show && f && f[0] !== 'idle' && S.tab === 'anims') {
 		x.globalAlpha = 0.28;
 		drawPet(x, 'idle', 0, ox, oy, z, cw, ch);
@@ -2602,6 +2630,7 @@ function drawStage(t) {
 	const nm = [...ANIMS, ...POSES].find((a) => a.k === S.sel)?.name;
 	const by = f && [...ANIMS, ...POSES].find((a) => a.k === f[0])?.name;
 	if (S.show) $('#playing').textContent = '\u266A ' + VOICE.find((v) => v.k === S.show.role).name;
+	else if (off) $('#playing').textContent = S.sel === 'call' ? `${nm} (sound only)` : `${nm} (off: no stand-in)`;
 	else $('#playing').textContent = borrowed ? `${nm} (borrows ${by})` : nm || '';
 }
 
@@ -2673,12 +2702,25 @@ function drawThumb(c, k, t) {
 
 function loop(now) {
 	const t = now / 1000;
-	if (S.pack) {
-		drawStage(t);
-		if (S.tab === 'anims') for (const c of document.querySelectorAll('canvas[data-thumb]')) drawThumb(c, c.dataset.thumb, t);
+	if (active) {
+		if (S.pack) {
+			drawStage(t);
+			if (S.tab === 'anims') for (const c of document.querySelectorAll('canvas[data-thumb]')) drawThumb(c, c.dataset.thumb, t);
+		}
+		if (modalTick) modalTick();
+		fillRanges();
 	}
-	if (modalTick) modalTick();
 	requestAnimationFrame(loop);
+}
+// the settings page's sliders fill up to their value from --pct: keep it in step with every slider
+// here, however its value got set
+function fillRanges() {
+	for (const r of document.querySelectorAll('.ed input[type=range]')) {
+		if (r._pctOf === r.value) continue;
+		r._pctOf = r.value;
+		const min = +r.min || 0, max = r.max === '' ? 100 : +r.max;
+		r.style.setProperty('--pct', (max > min ? clamp((r.value - min) / (max - min), 0, 1) * 100 : 0).toFixed(1) + '%');
+	}
 }
 function paint() {
 	renderSlots();
@@ -2703,7 +2745,7 @@ function select(k) {
 
 function renderAll() {
 	version++;
-	$('#app').classList.toggle('readonly', !S.editable);
+	$('#edApp').classList.toggle('readonly', !S.editable);
 	renderSlots();
 	renderInspector();
 	renderSounds();
@@ -2764,6 +2806,9 @@ function renderSlots() {
 	$('#slots').replaceChildren(...ANIMS.filter((a) => !a.group).map(slotCard));
 	$('#slotsReact').replaceChildren(...ANIMS.filter((a) => a.group === 'reaction').map(slotCard));
 	$('#poses').replaceChildren(...POSES.map(slotCard));
+	const badge = $('#navAnims');   // (in the view's side menu: how many of its animations it has)
+	badge.hidden = false;
+	badge.textContent = `${ANIMS.filter((a) => has(a.k)).length}/${ANIMS.length}`;
 }
 
 function field(label, input, val) {
@@ -2950,7 +2995,7 @@ function renderSounds() {
 				if (btn.classList.contains('on')) return stopSound();
 				try {
 					const buf = await decodeAudio(await (await blob()).arrayBuffer());
-					document.querySelectorAll('.sfile .play.on').forEach((b) => { b.classList.remove('on'); b.textContent = '▶'; });
+					document.querySelectorAll('#editorView .sfile .play.on').forEach((b) => { b.classList.remove('on'); b.textContent = '▶'; });
 					btn.classList.add('on');
 					btn.textContent = '■';
 					playBuffer(buf, 0, undefined, 1, () => { btn.classList.remove('on'); btn.textContent = '▶'; });
@@ -3265,7 +3310,7 @@ function renderLook() {
 		palette.append(lab);
 	}
 	const more = cols.length - MAX;
-	const palRow = h('div', { class: 'color hue top' },
+	const palRow = h('div', { class: 'color hue align-top' },
 		h('div', { class: 'lbl' }, h('div', { text: 'Swap colors' }),
 			h('div', { class: 'muted small', text: cols.length ? 'Each color in the drawings, most used first. Pick a new one for any of them; right-click one to put it back.' : 'Add an idle animation first.' }),
 			more > 0 ? h('div', { class: 'muted small', text: `And ${more} more (soft edges and shading): the sliders change those.` }) : null),
@@ -3327,7 +3372,7 @@ async function dropPage(files) {
 
 function setTab(t) {
 	S.tab = t;
-	document.querySelectorAll('.tabs button').forEach((b) => b.classList.toggle('on', b.dataset.tab === t));
+	document.querySelectorAll('#edNav button').forEach((b) => b.classList.toggle('on', b.dataset.tab === t));
 	for (const id of ['anims', 'sounds', 'details', 'colors']) $('#tab-' + id).hidden = id !== t;
 	if (t === 'details') renderDetails();
 }
@@ -3374,7 +3419,7 @@ function wire() {
 		else if (act === 'import') pick((f) => importZip(f[0]), '.zip,.obspet');
 		else if (act === 'remove') removePack();
 	});
-	document.querySelectorAll('.tabs button').forEach((b) => b.addEventListener('click', () => setTab(b.dataset.tab)));
+	document.querySelectorAll('#edNav button').forEach((b) => b.addEventListener('click', () => setTab(b.dataset.tab)));
 	$('#turn').addEventListener('click', (e) => {
 		S.turn = !S.turn;
 		e.currentTarget.classList.toggle('on', S.turn);
@@ -3389,15 +3434,16 @@ function wire() {
 	$('#trySel').replaceChildren(...TESTS.map(([g, items]) => h('optgroup', { label: g }, ...items.map(([v, t]) => h('option', { value: v, text: t })))));
 	$('#tryGo').addEventListener('click', tryIt);
 	document.addEventListener('keydown', (e) => {
-		if (e.key !== 'Escape' || $('#modal').hidden) return;
-		const btns = [...document.querySelectorAll('#dialog .actions button')];
+		if (e.key !== 'Escape' || $('#edModal').hidden) return;
+		e.stopImmediatePropagation();
+		const btns = [...document.querySelectorAll('#edDialog .actions button')];
 		(btns.find((b) => /^(Cancel|Close)$/.test(b.textContent)) || btns[0])?.click();
 	});
 	// the page as a drop target: files named after a slot go there
 	window.addEventListener('dragenter', (e) => {
-		if (![...(e.dataTransfer?.types || [])].includes('Files')) return;
+		if (!active || ![...(e.dataTransfer?.types || [])].includes('Files')) return;
 		dragDepth++;
-		if ($('#modal').hidden) $('#dropHint').hidden = false;
+		if ($('#edModal').hidden) $('#dropHint').hidden = false;
 	});
 	window.addEventListener('dragleave', () => {
 		if (--dragDepth <= 0) {
@@ -3405,15 +3451,16 @@ function wire() {
 			$('#dropHint').hidden = true;
 		}
 	});
-	window.addEventListener('dragover', (e) => e.preventDefault());
+	window.addEventListener('dragover', (e) => active && e.preventDefault());
 	window.addEventListener('drop', (e) => {
+		if (!active) return;
 		e.preventDefault();
 		dragDepth = 0;
 		$('#dropHint').hidden = true;
 		const files = [...(e.dataTransfer?.files || [])];
-		if (files.length && $('#modal').hidden) dropPage(files);
+		if (files.length && $('#edModal').hidden) dropPage(files);
 	});
-	window.addEventListener('focus', () => refreshPacks().catch(() => {}));
+	window.addEventListener('focus', () => active && booted && refreshPacks().catch(() => {}));
 	window.addEventListener('beforeunload', (e) => {
 		if (S.dirtyMeta || S.dirty.size || saving) {
 			save();
@@ -3422,9 +3469,66 @@ function wire() {
 	});
 }
 
-// The Update card (/update/update.js): save before OBS closes for an update, and don't reload into
-// the new version over unsaved work
-window.OBSPET_UPDATE_HOOKS = {
+// ------------------------------------------------------------------ the view
+
+// The settings page shows this view with show() and leaves it with hide(). Nothing loads until the
+// view is first shown; while it's hidden the stage stops drawing and the page's drops, focus and
+// hash are the settings page's again.
+let active = false, booted = false;
+function setHash(id) {
+	if (active) history.replaceState(null, '', '#character:' + encodeURIComponent(id));
+}
+
+async function boot(want) {
+	try {
+		await refreshPacks();
+		S.defaults = await apiJson('defaults').catch(() => ({}));
+	} catch (e) {
+		booted = false;
+		toast("Couldn't reach OBS. Is it still open? (" + e.message + ')', true);
+		return;
+	}
+	const first = S.packs.find((p) => p.id === want) || S.packs.find((p) => p.on_stream) || S.packs.find((p) => p.user) || S.packs[0];
+	if (first) await openPack(first.id);
+	else await newPack();
+}
+
+window.OBSPET_EDITOR = {
+	// shows character `id` (or the one open last, or the one on stream)
+	async show(id = '') {
+		active = true;
+		if (!booted) {
+			booted = true;
+			return boot(id);
+		}
+		if (id && id !== S.id && S.packs.some((p) => p.id === id)) {
+			await refreshPacks().catch(() => {});
+			return openPack(id);
+		}
+		if (S.id) setHash(S.id);
+		refreshPacks().catch(() => {});
+	},
+	// saves what's waiting, and goes quiet
+	async hide() {
+		active = false;
+		if (!$('#edModal').hidden) {   // (left with the Back button: the open dialog goes as if cancelled)
+			const btns = [...document.querySelectorAll('#edDialog .actions button')];
+			const cancel = btns.find((b) => /^(Cancel|Close)$/.test(b.textContent));
+			if (cancel) cancel.click();
+			else closeModal();
+		}
+		$('#menu').hidden = true;
+		$('#dropHint').hidden = true;
+		dragDepth = 0;
+		stopHearing();
+		stopSound();
+		clearTimeout(saveTimer);
+		await save();
+	},
+	// a new character, from its name (the settings page's character picker offers it)
+	new: () => newPack(),
+	// the Update card (/update/update.js, through settings.js): save before OBS closes for an update,
+	// and don't reload into the new version over unsaved work
 	async beforeUpdate() {
 		clearTimeout(saveTimer);
 		await save();
@@ -3433,25 +3537,6 @@ window.OBSPET_UPDATE_HOOKS = {
 	canReload: () => !(S.dirty.size || S.dirtyMeta || S.dirtySheet || saving),
 };
 
-async function start() {
-	wire();
-	requestAnimationFrame(loop);
-	if (!KEY) {
-		document.body.innerHTML = '<p style="padding:40px">Open this from OBS: the Pet’s properties → <b>Open pet editor</b></p>';
-		return;
-	}
-	const sl = $('#settingsLink');
-	if (sl) sl.href = `/settings/?k=${encodeURIComponent(KEY)}`;
-	try {
-		await refreshPacks();
-		S.defaults = await apiJson('defaults').catch(() => ({}));
-	} catch (e) {
-		toast("Couldn't reach OBS. Is it still open? (" + e.message + ')', true);
-		return;
-	}
-	const want = decodeURIComponent(location.hash.slice(1));
-	const first = S.packs.find((p) => p.id === want) || S.packs.find((p) => p.on_stream) || S.packs.find((p) => p.user) || S.packs[0];
-	if (first) await openPack(first.id);
-	else await newPack();
-}
-start();
+wire();
+requestAnimationFrame(loop);
+window.dispatchEvent(new Event('obspet-editor-ready'));

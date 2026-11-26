@@ -24,16 +24,6 @@ static const char *DEFAULT_PACKS[] = {"blob"};   // the first one found is the d
 // the characters pets 2, 3, ... start as (the default character if one isn't there)
 static const char *EXTRA_PACKS[] = {"cat-ginger", "dog-retriever", "cat-black", "dog-husky", "cat-tabby"};
 
-// "How chatty" before 0.6 (now "chatty_s", seconds): the seconds each choice meant
-static const struct {
-	const char *id, *label;
-	int every, sound_gap;
-} CHATTY[] = {
-	{"rarely", "Rarely (about once a minute at most)", 60, 120},
-	{"sometimes", "Sometimes (every 15 seconds at most)", 15, 30},
-	{"often", "Often (every 8 seconds at most)", 8, 20},
-};
-
 static const struct {
 	const char *id;
 	Hear h;
@@ -498,7 +488,6 @@ void PetSource::defaults(obs_data_t *s)
 	obs_data_set_default_string(s, "reward", "Pet {name}");
 	obs_data_set_default_bool(s, "moods", true);
 	obs_data_set_default_bool(s, "allow_delete", true);
-	obs_data_set_default_int(s, "chatty_s", 5);   // the shortest wait between chat reactions (s)
 	obs_data_set_default_bool(s, "automod", true);
 	obs_data_set_default_bool(s, "automod_show", true);
 	obs_data_set_default_string(s, "personality", "");
@@ -615,8 +604,6 @@ void Pet::update(obs_data_t *s)
 		}
 	}
 	hear = hear_of(str(s, "hear"));
-	int every = (int)std::clamp<long long>(obs_data_get_int(s, "chatty_s"), 3, 120);
-	mood_gap = std::max(10, every * 2);   // (its sounds for them: half as often)
 	owner->scene_t = 0;   // (look at the scene again: the chat, alert or kept-off sources may have changed)
 
 	// what the chat-mood engine needs from this Pet
@@ -626,7 +613,6 @@ void Pet::update(obs_data_t *s)
 	mood.on = react_chat || automod;
 	mood.automod_only = !react_chat;
 	mood.allow_delete = automod;
-	mood.gap = every;
 	mood.name = name;
 	mood.describe = pack ? pack->describe : "";
 	mood.pronouns = pack && !pack->pronouns.empty() ? pack->pronouns : "they";   // the editor saves "they" as empty
@@ -719,20 +705,12 @@ PetSource::PetSource(obs_data_t *settings, obs_source_t *src) : source(src)
 			obs_data_set_string(settings, "hear", "off");
 		obs_data_erase(settings, "sounds");
 	}
-	if (obs_data_has_user_value(settings, "mood_every")) {
-		long long e = obs_data_get_int(settings, "mood_every");
-		obs_data_set_string(settings, "chatty", e >= 35 ? "rarely" : e <= 10 ? "often" : "sometimes");
-		obs_data_erase(settings, "mood_every");
-	}
-	obs_data_erase(settings, "mood_gap");
-	// 0.6: "how chatty" is seconds; Auto mod has its own switches (it ran when chat reactions did,
+	// a pet's own "how chatty" (before 0.5 two sliders, then a choice, then seconds in 0.6) is gone:
+	// the account's "Time between reactions" is the only one
+	for (const char *k : {"mood_every", "mood_gap", "chatty", "chatty_s"})
+		obs_data_erase(settings, k);
+	// 0.6: Auto mod has its own switches (it ran when chat reactions did,
 	// and "Auto mod only" hid the pet and its reactions: now that's chat reactions off)
-	if (obs_data_has_user_value(settings, "chatty")) {
-		for (auto &c : CHATTY)
-			if (str(settings, "chatty") == c.id)
-				obs_data_set_int(settings, "chatty_s", c.every);
-		obs_data_erase(settings, "chatty");
-	}
 	if (!obs_data_has_user_value(settings, "automod")) {
 		auto on = [&](const char *k) { return !obs_data_has_user_value(settings, k) || obs_data_get_bool(settings, k); };
 		bool only = obs_data_get_bool(settings, "automod_only");
@@ -1550,7 +1528,7 @@ obs_properties_t *PetSource::properties()
 	});
 	obs_property_set_long_description(open_set, "Opens OBSPETS Settings in your browser. All changes save automatically.");
 
-	obs_property_t *ed = obs_properties_add_button(p, "open_editor", "Open pet editor", [](obs_properties_t *, obs_property_t *, void *d) {
+	obs_property_t *ed = obs_properties_add_button(p, "open_editor", "Edit characters", [](obs_properties_t *, obs_property_t *, void *d) {
 		auto *pet = static_cast<PetSource *>(d);
 		std::string id;
 		{
@@ -1560,7 +1538,7 @@ obs_properties_t *PetSource::properties()
 		open_editor(id);
 		return false;
 	});
-	obs_property_set_long_description(ed, "Opens the pet editor in your browser to customize or create characters.");
+	obs_property_set_long_description(ed, "Opens OBSPETS Settings on Characters, with this pet's character: change it, or make your own.");
 
 	return p;
 }

@@ -740,6 +740,23 @@ void Hub::delete_message(const std::string &msg_id)
 	});
 }
 
+void Hub::mood_not_shown(const std::string &kind)
+{
+	std::lock_guard<std::mutex> g(m_);
+	if (kind != last_kind_)
+		return;   // (another reaction came since)
+	last_kind_ = prev_kind_;
+	last_react_at_ = prev_react_at_;
+	prev_kind_.clear();
+	prev_react_at_ = -1e9;
+}
+
+double Hub::ai_gap()
+{
+	std::lock_guard<std::mutex> g(m_);
+	return cfg_gap_;
+}
+
 bool Hub::gone(const std::string &msg_id)
 {
 	if (msg_id.empty())
@@ -1248,6 +1265,7 @@ void Hub::mood_tick()
 	std::vector<Line> batch;
 	std::vector<std::string> only;   // the reactions worth asking about now (empty: every one)
 	bool nothing = false;            // none: don't ask at all
+	double asked = 0;                // when (a reaction counts from then, so the next ask isn't held back by the answer's delay)
 	{
 		std::lock_guard<std::mutex> g(m_);
 		PetClient *mp = mood_pet();
@@ -1262,7 +1280,7 @@ void Hub::mood_tick()
 		double t = now_s();
 		if (!any || t < last_ask_ + cfg_gap_ || t < paused_until_)
 			return;
-		last_ask_ = t;
+		last_ask_ = asked = t;
 		// Only ask about what could still happen, so the model reads a shorter menu (and nothing is
 		// asked when nothing could): off screen, only Auto mod's deletes matter; within the gap after
 		// a reaction, only angry and yank get through (see the hold-back below).
@@ -1273,7 +1291,7 @@ void Hub::mood_tick()
 				only = {"yank"};
 			else
 				nothing = true;
-		} else if (!prof.automod_only && !last_kind_.empty() && t - last_react_at_ < prof.gap) {
+		} else if (!prof.automod_only && !last_kind_.empty() && t - last_react_at_ < cfg_gap_) {
 			only = {"yank"};
 			if (angry_ok)
 				only.push_back("angry");
@@ -1403,13 +1421,14 @@ void Hub::mood_tick()
 			info("mood: %s at a message that was deleted meanwhile: skipped", kind.c_str());
 			return;
 		}
-		double t = now_s();
-		if (!remove && kind != "angry" && kind != "yank" && t - last_react_at_ < prof.gap) {
-			info("mood: %s, held back (reacted %.0f s ago)", kind.c_str(), t - last_react_at_);
+		if (!remove && kind != "angry" && kind != "yank" && asked - last_react_at_ < cfg_gap_) {
+			info("mood: %s, held back (reacted %.0f s before)", kind.c_str(), asked - last_react_at_);
 			return;
 		}
+		prev_kind_ = last_kind_;
+		prev_react_at_ = last_react_at_;
 		last_kind_ = kind;
-		last_react_at_ = t;
+		last_react_at_ = asked;
 		if (remove)
 			yanked_[viewer->id] = viewer->platform;
 	}

@@ -39,7 +39,6 @@ struct MoodProfile {
 	bool on = false, allow_delete = true;
 	bool automod_only = false;   // no chat reactions: chat is only checked for what Auto mod deletes
 	bool show_deletes = true;    // a pet rips what Auto mod deletes out of the chat on stream (else it just goes)
-	double gap = 15;     // s it lets chat be after a reaction
 	std::string name, describe, pronouns, personality, state;
 	std::vector<std::string> ignore;   // chatters it never reacts to (bots), lower case
 	std::vector<std::string> skip;     // chat reactions it's set not to do (the model doesn't offer them)
@@ -108,6 +107,10 @@ public:
 	void cancel_sign_in();
 	void open_sign_in_page();   // the browser again, at the page for the current code
 	void delete_message(const std::string &msg_id);   // a message Auto mod caught, now (on its own platform)
+	// a chat reaction the pet didn't act out (it slept through it, or it came too late): it doesn't
+	// count as the last reaction, so the next one needn't wait for it
+	void mood_not_shown(const std::string &kind);
+	double ai_gap();   // s between chat reactions (the account's "Time between reactions")
 	bool gone(const std::string &msg_id);   // deleted from chat by a mod, a ban or a clear (not by the pet): never show it again
 	void set_automod(bool on, const std::vector<std::string> &cats);   // saves Auto mod for the account
 	// saves the account's reactions to chat: on or off, the time between them (s), a daily limit
@@ -211,8 +214,8 @@ private:
 	int cfg_daily_cap_ = 0;
 	// moods
 	std::deque<Line> lines_;
-	double last_ask_ = -1e9, paused_until_ = 0, last_react_at_ = -1e9;
-	std::string last_kind_, mood_note_;
+	double last_ask_ = -1e9, paused_until_ = 0, last_react_at_ = -1e9, prev_react_at_ = -1e9;
+	std::string last_kind_, prev_kind_, mood_note_;
 	std::map<std::string, std::string> yanked_;       // message id -> its platform, until deleted
 	std::map<std::string, std::string> colors_;       // user id -> chat color
 	std::map<std::string, std::pair<double, std::string>> badges_;   // channel -> (when, badge JSON)

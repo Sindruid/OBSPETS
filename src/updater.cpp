@@ -58,7 +58,7 @@ bool checked = false;   // it answered at least once
 // the update in progress: idle, downloading, verifying, permission, closing, error
 std::string phase = "idle", error, hint;
 double progress = 0;
-std::map<std::string, double> seen;   // page ("settings", "editor") -> when it last asked
+std::map<std::string, double> seen;   // page ("settings"; "editor": the old editor page) -> when it last asked
 
 // after the restart an update made
 struct Handoff {
@@ -680,7 +680,7 @@ void updater_loaded()
 	for (auto &p : pages) {
 		if (p == "settings")
 			open_settings();
-		else if (p == "editor")
+		else if (p == "editor")   // (the old editor page: its Characters view now)
 			open_editor("");
 	}
 }
@@ -725,7 +725,7 @@ void updater_resumed(bool same_port)
 {
 	std::lock_guard<std::mutex> g(mu);
 	reopen = !same_port && !handoff.pages.empty();
-	info("update: the settings page and editor %s", same_port ? "keep their address" : "open again (the port was taken)");
+	info("update: the settings page %s", same_port ? "keep their address" : "open again (the port was taken)");
 }
 
 HttpResp updater_api(const HttpReq &r, const char *page)

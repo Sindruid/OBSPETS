@@ -48,7 +48,8 @@ Things to try
 
 Your own characters
 -------------------
-Tools, "OBSPETS: Pet editor" makes and changes characters in your browser.
+Tools, "OBSPETS: Settings", then "Characters" at the top, makes and changes characters in your
+browser. (In a pet's properties, "Edit characters" opens it too.)
 Under "Show all settings", "Open my characters folder" opens
     %APPDATA%\obs-studio\plugin_config\obspet\packs
 Put a character's folder there. To make one, copy obspet\data\packs\_template from this zip

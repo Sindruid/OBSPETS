@@ -83,7 +83,7 @@ const PET_SECTIONS = [
 	{ id: 'try', label: 'Test Chat' },
 	{ id: 'habits', label: 'Sound & Habits' },
 	{ id: 'label', label: 'Name Label' },
-	{ id: 'custom', label: 'Custom Characters' },
+	{ id: 'custom', label: 'Character Folders' },
 	{ id: 'account', label: 'Account' },
 ];
 
@@ -155,6 +155,17 @@ function h(tag, props, ...kids) {
 }
 
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+
+// "45", "45 s", "2 min", "1 min 30 s", "1:30", "never" -> seconds (NaN if it doesn't read as a time).
+function parseSeconds(t) {
+	t = t.toLowerCase().trim();
+	if (t === 'never' || t === 'off') return 0;
+	let m = t.match(/^(\d+):(\d{1,2})$/);
+	if (m) return Number(m[1]) * 60 + Number(m[2]);
+	m = t.match(/^(?:(\d+(?:\.\d+)?)\s*m(?:in(?:utes?|s)?)?)?\s*(?:(\d+(?:\.\d+)?)\s*(?:s(?:ec(?:onds?|s)?)?)?)?$/);
+	if (!m || (m[1] == null && m[2] == null)) return NaN;
+	return Number(m[1] || 0) * 60 + Number(m[2] || 0);
+}
 const slotKey = (base, slot) => (slot ? `${base}${slot + 1}` : base);
 const doKey = (id, slot) => slotKey(`do_${id}`, slot);
 
@@ -308,7 +319,7 @@ function loadPackAsset(id) {
 	if (existing) return existing;
 	const entry = { ready: false, failed: false, info: null, canvas: null };
 	packCache.set(id, entry);
-	const q = new URLSearchParams({ id, k: KEY });
+	const q = new URLSearchParams({ id, k: KEY, v: S.packGen || 0 });   // (v: new after a character was edited)
 	fetch(`/editor/api/pack?${q}`)
 		.then((r) => (r.ok ? r.json() : Promise.reject(new Error('pack'))))
 		.then((info) => {
@@ -390,11 +401,13 @@ function slotPackName(src, slot) {
 function slotPetName(src, slot) {
 	return (src.settings[slotKey('name', slot)] || '').trim() || slotPackName(src, slot);
 }
-const editorUrl = (packId) => `/editor/?k=${encodeURIComponent(KEY)}${packId ? '#' + encodeURIComponent(packId) : ''}`;
+// the Characters view (the character editor, /editor/editor.js) on character `packId`: a link within this page
+const editorUrl = (packId) => (packId ? `#character:${encodeURIComponent(packId)}` : '#characters');
 
 // ------------------------------------------------------------------ state
 
 const S = {
+	view: 'sources',     // 'sources' (this file) or 'characters' (the character editor, /editor/editor.js)
 	data: null,
 	fonts: [],
 	selectedName: null,
@@ -442,9 +455,93 @@ function parseHash() {
 }
 
 function updateHash(src) {
-	if (!src) return;
+	if (!src || S.view !== 'sources') return;
 	const want = `#${src.kind}:${encodeURIComponent(src.name)}`;
 	if (location.hash !== want) history.replaceState(null, '', want);
+}
+
+// ------------------------------------------------------------------ the two views
+
+// The page has two views: Sources (each OBSPETS and OBSPETS Chat source's settings, this file) and
+// Characters (the character editor, /editor/editor.js, a module that sets window.OBSPET_EDITOR).
+// The hash says which: #pet:<name> / #chat:<name> for Sources, #characters or #character:<id>
+// for Characters. Switching sets the hash, so the browser's Back button goes back to the other view.
+const editorReady = new Promise((res) => {
+	if (window.OBSPET_EDITOR) res();
+	else window.addEventListener('obspet-editor-ready', res, { once: true });
+});
+
+function hashView() {
+	const t = parseHash();
+	if (t?.kind === 'character') return { view: 'characters', id: t.name };
+	if (t && !t.kind && t.name === 'characters') return { view: 'characters', id: '' };
+	return { view: 'sources', target: t };
+}
+
+function sourcesHash() {
+	const src = currentSource();
+	return src ? `#${src.kind}:${encodeURIComponent(src.name)}` : '#sources';
+}
+
+// the view switch in the header
+function goView(view) {
+	if (view === S.view) return;
+	location.hash = view === 'characters' ? '#characters' : sourcesHash();   // (Characters opens on the character it showed last)
+}
+
+// a new character: Characters opens and asks for its name
+async function newCharacter() {
+	if (S.view !== 'characters') location.hash = '#characters';
+	await editorReady;
+	await showView('characters');
+	window.OBSPET_EDITOR.new();
+}
+
+function route() {
+	const want = hashView();
+	if (want.view === 'characters') return showView('characters', want.id);
+	showView('sources');
+	const t = want.target;
+	const hit = t && S.data?.sources.find((s) => s.name === t.name && (!t.kind || s.kind === t.kind));
+	if (hit) selectSource(hit.name);
+}
+
+let viewBusy = Promise.resolve();
+function showView(view, packId = '') {
+	// (one switch at a time: leaving Characters saves first)
+	return (viewBusy = viewBusy.then(() => applyView(view, packId)).catch(() => {}));
+}
+
+async function applyView(view, packId) {
+	const chars = view === 'characters';
+	const was = S.view;
+	S.view = view;
+	for (const b of document.querySelectorAll('#viewSwitch button')) b.classList.toggle('on', b.dataset.view === view);
+	for (const sel of ['#sourceBar', '#saved', '#banners']) $(sel).hidden = chars;
+	for (const sel of ['#editorView', '#edPicker', '#edActions', '#edSaved']) $(sel).hidden = !chars;
+	document.title = chars ? 'Characters · OBSPETS' : 'OBSPETS Settings';
+	if (chars) {
+		$('#app').hidden = true;
+		$('#emptyState').hidden = true;
+		if (was !== view) window.scrollTo(0, 0);
+		await editorReady;
+		await window.OBSPET_EDITOR.show(packId);
+		return;
+	}
+	if (was === view) return;
+	window.scrollTo(0, 0);
+	if (S.data) {
+		renderTopBar();
+		renderBanners();
+		renderApp();
+	}
+	if (window.OBSPET_EDITOR) {
+		// what changed in Characters shows here once it's saved: a character's look, its name, a new one
+		await window.OBSPET_EDITOR.hide();
+		packCache.clear();
+		S.packGen = (S.packGen || 0) + 1;
+		if (S.data) refreshState().catch(() => {});
+	}
 }
 
 // ------------------------------------------------------------------ state fetch & patching
@@ -593,14 +690,36 @@ function makeToggleRow(label, hint, checked, onChange) {
 }
 
 // `hint` can be a function of the value: it then updates as the slider moves.
-function makeSliderRow(label, hint, { value, min, max, step = 1, format, onChange, immediate = false }) {
+// With `parse` (text -> number, or NaN), the value box is a text field: type a value and press
+// Enter (or leave the box) to set it. Esc puts back the current value.
+function makeSliderRow(label, hint, { value, min, max, step = 1, format, parse, onChange, immediate = false }) {
 	const fmt = format || ((v) => String(v));
-	const valEl = h('span', { class: 'slider-val', text: fmt(value) });
 	const live = typeof hint === 'function';
+	const setText = (t) => { if (parse) valEl.value = t; else valEl.textContent = t; };
 	const show = (n) => {
-		valEl.textContent = fmt(n);
+		setText(fmt(n));
 		if (live) row.querySelector('.row-hint').textContent = hint(n);
 	};
+	const commit = () => {
+		let n = parse(valEl.value.trim());
+		if (!Number.isFinite(n)) { show(Number(input.value)); return; }
+		n = clamp(Math.round(n / step) * step, Number(min), Number(max));
+		input.value = n;
+		setRangePct(input);
+		onChange(n, true);
+		show(n);
+	};
+	const valEl = parse
+		? h('input', {
+			type: 'text', class: 'slider-val', value: fmt(value), spellcheck: false,
+			onfocus: () => valEl.select(),
+			onchange: commit,
+			onkeydown: (e) => {
+				if (e.key === 'Enter') valEl.blur();
+				else if (e.key === 'Escape') { show(Number(input.value)); valEl.blur(); }
+			},
+		})
+		: h('span', { class: 'slider-val', text: fmt(value) });
 	const input = h('input', {
 		type: 'range', min, max, step, value,
 		oninput: () => {
@@ -765,6 +884,9 @@ function makeFontPicker(face, onPick) {
 	const show = () => {
 		if (open) return;
 		open = true;
+		// (300 px: the list's max-height) opens upward when there's no room below and more above
+		const r = input.getBoundingClientRect();
+		list.classList.toggle('up', window.innerHeight - r.bottom < 300 && r.top > window.innerHeight - r.bottom);
 		list.hidden = false;
 		input.setAttribute('aria-expanded', 'true');
 		fill('');
@@ -909,22 +1031,12 @@ function renderTopBar() {
 		pill.className = cls;
 		$('.acct-label', pill).textContent = label;
 		pill.onclick = () => {
-			if (currentSource()) {
-				S.section = 'account';
-				renderApp();
-			} else {
-				$('#emptyState')?.scrollIntoView({ behavior: 'smooth' });
-			}
+			if (currentSource()) S.section = 'account';
+			if (S.view !== 'sources') return goView('sources');
+			if (currentSource()) renderApp();
+			else $('#emptyState')?.scrollIntoView({ behavior: 'smooth' });
 		};
 	}
-
-	// Pet editor link
-	const ed = $('#editorLink');
-	let edUrl = `/editor/?k=${encodeURIComponent(KEY)}`;
-	if (cur?.kind === 'pet' && slotPackId(cur, 0)) {
-		edUrl += `#${encodeURIComponent(slotPackId(cur, 0))}`;
-	}
-	ed.href = edUrl;
 }
 
 function renderBanners() {
@@ -1046,6 +1158,7 @@ function selectSource(name) {
 // ------------------------------------------------------------------ main render
 
 function renderApp() {
+	if (S.view !== 'sources') return;   // (Characters is shown: its hash and its view stay)
 	const src = currentSource();
 	S.stageCanvas = null;
 	S.thumbCanvases = [];
@@ -1091,6 +1204,7 @@ function renderEmptyState() {
 						if (r?.name) selectSource(r.name);
 					},
 				}),
+				h('a', { class: 'btn ghost', href: editorUrl(''), text: 'Make a character' }),
 			),
 		),
 		h('div', { style: { marginTop: '20px', textAlign: 'left' } }, buildAccountCard(null)),
@@ -1133,9 +1247,8 @@ function renderPetRail(src) {
 			nPets > 1 ? null : h('a', {
 				class: 'btn small ghost',
 				href: editorUrl(slotPackId(src, 0)),
-				target: '_blank',
-				rel: 'noopener',
-				text: `Edit ${packName} ↗`,
+				title: 'Open it in Characters',
+				text: `Edit ${packName}`,
 			}),
 		),
 	);
@@ -1307,9 +1420,8 @@ function buildPetSlotsSection(src) {
 		const edBtn = h('a', {
 			class: 'btn small ghost',
 			href: editorUrl(packId),
-			target: '_blank',
-			rel: 'noopener',
-			text: 'Edit ↗',
+			title: 'Open it in Characters',
+			text: 'Edit',
 		});
 
 		const browseBtn = h('button', {
@@ -1371,7 +1483,7 @@ function buildPetSlotsSection(src) {
 					const k = doKey(r.id, i);
 					if (cant[r.id]) {   // its character has no animation for it: off, and says what it needs
 						chips.append(h('button', { type: 'button', class: 'rchip need', disabled: true, text: r.label,
-							title: `${needsText(cant[r.id])}. Add one in the pet editor, or pick another animation to stand in for it.` }));
+							title: `${needsText(cant[r.id])}. Add one in Characters, or pick another animation to stand in for it.` }));
 						continue;
 					}
 					const on = cfg[k] !== false;
@@ -1394,7 +1506,7 @@ function buildPetSlotsSection(src) {
 					panel.append(h('p', { class: 'react-need' },
 						h('b', { text: 'Needs an animation: ' }),
 						lacking.map((r) => `${r.label} (${cant[r.id]})`).join(', '),
-						'. Add it in the ', h('a', { href: editorUrl(slotPackId(src, i)), target: '_blank', text: 'pet editor' }),
+						'. Add it in ', h('a', { href: editorUrl(slotPackId(src, i)), text: 'Characters' }),
 						', or have another animation stand in.'));
 			}
 		};
@@ -1519,10 +1631,11 @@ function openCharacterGallery(src, slot) {
 
 	dlg.replaceChildren(
 		h('h2', { text: `Choose a character for Pet ${slot + 1}` }),
-		h('p', { class: 'sub', text: 'Click a character to use it right away, or open the Pet editor to draw or customize one.' }),
+		h('p', { class: 'sub', text: 'Click a character to use it right away, or make your own in Characters.' }),
 		grid,
 		h('div', { class: 'actions' },
-			h('a', { class: 'btn ghost', href: `/editor/?k=${encodeURIComponent(KEY)}`, target: '_blank', rel: 'noopener', text: 'Open pet editor ↗' }),
+			h('button', { type: 'button', class: 'ghost', text: '+ Make a new character', onclick: () => { closeModal(); newCharacter(); } }),
+			h('div', { class: 'grow' }),
 			h('button', { type: 'button', text: 'Close', onclick: closeModal }),
 		),
 	);
@@ -1594,16 +1707,6 @@ function buildPetSceneSection(src) {
 			makeRow('Chat source', 'Auto picks OBSPETS Chat, or a source with “chat” in its name.',
 				makeSourceSelect(cfg.perch || '', meta.auto_chat, (v) => patchSource(src.name, { perch: v }, { immediate: true, refreshAfter: true })),
 			),
-			makeSliderRow('How often it visits chat', (v) => {
-				if (v <= 0) return 'Stays on the floor. Chat can still ask it up.';
-				const r = petRhythm({ naps: cfg.naps ?? 1, energy: cfg.energy ?? 1, visit: v });
-				return `Hops onto the chat about ${everyText(r.visit)} and sits there for about ${spanText(r.stay)}.`;
-			}, {
-				value: Number(cfg.visit ?? 0.5),
-				min: 0, max: 1, step: 0.05,
-				format: (v) => everyText(petRhythm({ naps: cfg.naps ?? 1, energy: cfg.energy ?? 1, visit: v }).visit),
-				onChange: (v, imm) => patchSource(src.name, { visit: v }, { immediate: imm }),
-			}),
 			meta.chat_kind === 'other' ? makeToggleRow('Sit on top of this chat', 'Finds the top message from the overlay’s pixels.',
 				!!cfg.perch_box, (v) => patchSource(src.name, { perch_box: v }, { immediate: true })) : null,
 			meta.chat_kind === 'other' ? makeToggleRow('Yank messages from this chat', null,
@@ -1797,17 +1900,6 @@ function buildPetReactionsSection(src) {
 		h('div', { class: 'card-body' },
 			makeToggleRow('React to chat', 'AI reads chat and picks a reaction.',
 				cfg.moods !== false, (v) => patchSource(src.name, { moods: v }, { immediate: true })),
-			makeSliderRow('How chatty', (v) => {
-				const ai = Number(acct.ai_gap) || 0;
-				return ai > v
-					? `At most one chat reaction every ${v} s. Your account reads chat every ${ai} s (Time between reactions, above), so that's as often as it gets.`
-					: `At most one chat reaction every ${v} s. Getting angry and ripping out a message don't wait.`;
-			}, {
-				value: Number(cfg.chatty_s ?? 5),
-				min: 3, max: 60, step: 1,
-				format: (v) => `every ${v} s`,
-				onChange: (v, imm) => patchSource(src.name, { chatty_s: v }, { immediate: imm }),
-			}),
 			makeRow('Ignore these chatters', 'Comma-separated, usually bots.',
 				h('div', { style: { width: '100%' } },
 					ignoreInput,
@@ -1852,11 +1944,14 @@ function buildPetReactionsSection(src) {
 
 // The account's reactions to chat: they spend its credit, so sindruid.com keeps them, for every OBS
 // and pet on the account (Hub::set_reacting). Credit and usage stay on sindruid.com.
-const GAPS = [5, 10, 15, 20, 30, 45, 60, 90, 120, 300];
-function gapText(g) {
-	if (g < 60 || g % 30) return `${g} s`;
-	const m = g / 60;
-	return (m % 1 ? `${Math.floor(m)}½` : m) + ' min';
+// (the pet page's slider has the same stops: GAPS in streamtools/backend/src/pages.js, keep in step)
+// Every second from 3 s (the backend's least) to a minute, then every 5 s to 2 min, every 15 s to 5 min.
+const GAPS = [];
+for (let g = 3; g <= 300; g += g < 60 ? 1 : g < 120 ? 5 : 15) GAPS.push(g);
+function gapText(g) {   // 5 -> "5 s", 90 -> "1½ min", 75 -> "1 min 15 s"
+	if (g < 60) return `${g} s`;
+	const m = Math.floor(g / 60), s = g % 60;
+	return s === 30 ? `${m}½ min` : `${m} min` + (s ? ` ${s} s` : '');
 }
 function buildAccountChatCard(acct) {
 	const cur = { on: acct.react_on !== false, gap: Number(acct.ai_gap) || 5, daily_cap: Number(acct.daily_cap) || 0 };
@@ -1880,7 +1975,7 @@ function buildAccountChatCard(acct) {
 		h('div', { class: 'card-body' },
 			makeToggleRow('React to chat', 'Off: no reactions to chat and no Auto mod, on any OBS.',
 				cur.on, (v) => save({ on: v }, true)),
-			makeSliderRow('Time between reactions', (i) => `The AI looks at chat at most every ${gapText(stops[i])}. More time makes your credit last longer. The pet still reads every message.`, {
+			makeSliderRow('Time between reactions', (i) => `The AI looks at chat at most every ${gapText(stops[i])}, and the pet reacts at most that often (getting angry and ripping out a message don't wait). More time makes your credit last longer. The pet still reads every message.`, {
 				value: Math.max(0, stops.indexOf(cur.gap)), min: 0, max: stops.length - 1, step: 1,
 				format: (i) => gapText(stops[i]),
 				onChange: (i, imm) => { if (imm) save({ gap: stops[i] }, false); },
@@ -2268,7 +2363,7 @@ function buildPetHabitsSection(src) {
 		value: Number(cfg.naps ?? 1),
 		min: 0, max: 3, step: 0.1,
 		format: (v) => everyText(rhythm({ naps: v }).nap),
-		onChange: (v, imm) => { patchSource(src.name, { naps: v }, { immediate: imm }); energyRow.refresh(); },
+		onChange: (v, imm) => { patchSource(src.name, { naps: v }, { immediate: imm }); energyRow.refresh(); chatRow?.refresh(); },
 	});
 	const energyRow = makeSliderRow('Energy', (v) => (v <= 0
 		? 'Stays put. Alerts, channel points and chat still get it moving.'
@@ -2276,8 +2371,17 @@ function buildPetHabitsSection(src) {
 		value: Number(cfg.energy ?? 1),
 		min: 0, max: 3, step: 0.1,
 		format: (v) => (v <= 0 ? 'Stays put' : everyText(rhythm({ energy: v }).move)),
-		onChange: (v, imm) => { patchSource(src.name, { energy: v }, { immediate: imm }); napsRow.refresh(); },
+		onChange: (v, imm) => { patchSource(src.name, { energy: v }, { immediate: imm }); napsRow.refresh(); chatRow?.refresh(); },
 	});
+	// Only with a chat in the scene: without one there's nothing to sit on.
+	const chatRow = hasChat ? makeSliderRow('Sitting on chat', (v) => (v <= 0
+		? 'Stays on the floor. Chat can still ask it up.'
+		: `Hops onto the chat about ${everyText(rhythm({ visit: v }).visit)} and sits there for about ${spanText(rhythm({ visit: v }).stay)}.`), {
+		value: Number(cfg.visit ?? 0.5),
+		min: 0, max: 1, step: 0.05,
+		format: (v) => (v <= 0 ? 'Never' : everyText(rhythm({ visit: v }).visit)),
+		onChange: (v, imm) => { patchSource(src.name, { visit: v }, { immediate: imm }); napsRow.refresh(); energyRow.refresh(); },
+	}) : null;
 
 	const habitsCard = h('div', { class: 'card' },
 		h('div', { class: 'card-hd' },
@@ -2287,6 +2391,7 @@ function buildPetHabitsSection(src) {
 		h('div', { class: 'card-body' },
 			napsRow,
 			energyRow,
+			chatRow,
 		),
 	);
 
@@ -2353,7 +2458,7 @@ function buildPetLabelSection(src) {
 		h('div', { class: 'sec-head' },
 			h('div', {},
 				h('h2', { class: 'sec-title', text: 'Name Label' }),
-				h('p', { class: 'sec-sub', text: 'Shown above the pet when a viewer redeems the pet reward.' }),
+				h('p', { class: 'sec-sub', text: 'Shown next to the pet when a viewer redeems the pet reward.' }),
 			),
 			h('button', {
 				type: 'button', class: 'small', text: 'Try in OBS',
@@ -2377,11 +2482,11 @@ function buildPetCustomSection(src) {
 
 	const card = h('div', { class: 'card' },
 		h('div', { class: 'card-hd' },
-			h('h3', { text: 'Character folders' }),
+			h('h3', { text: 'Folders' }),
 			null,
 		),
 		h('div', { class: 'card-body' },
-			makeRow('Your characters folder', 'One folder for each character you made or copied in the pet editor. If a name was already taken when it was made, the folder gets -2 on the end. The picker shows the character’s real name.',
+			makeRow('Your characters folder', 'One folder for each character you made or copied in Characters. If a name was already taken when it was made, the folder gets -2 on the end. The picker shows the character’s real name.',
 				h('div', { class: 'inline' },
 					h('button', {
 						type: 'button', text: 'Open my characters folder',
@@ -2389,9 +2494,8 @@ function buildPetCustomSection(src) {
 					}),
 					h('a', {
 						class: 'btn primary',
-						href: `/editor/?k=${encodeURIComponent(KEY)}`,
-						target: '_blank', rel: 'noopener',
-						text: 'Open pet editor ↗',
+						href: editorUrl(''),
+						text: 'Make or change characters',
 					}),
 				),
 			),
@@ -2432,8 +2536,8 @@ function buildPetCustomSection(src) {
 	return [
 		h('div', { class: 'sec-head' },
 			h('div', {},
-				h('h2', { class: 'sec-title', text: 'Custom Characters' }),
-				null,
+				h('h2', { class: 'sec-title', text: 'Character Folders' }),
+				h('p', { class: 'sec-sub', text: 'Where your characters are kept, and a character folder from anywhere for Pet 1.' }),
 			),
 		),
 		card,
@@ -2725,11 +2829,13 @@ function buildChatChannelsSection(src) {
 			makeSliderRow('Max messages', 'The oldest go when there are more.', {
 				value: Number(cfg.max ?? 30), min: 1, max: 200, step: 1,
 				format: (v) => String(v),
+				parse: (t) => (/^\d+$/.test(t) ? Number(t) : NaN),
 				onChange: (v, imm) => patchSource(src.name, { max: v }, { immediate: imm }),
 			}),
 			makeSliderRow('Fade out after', null, {
-				value: Number(cfg.fade ?? 0), min: 0, max: 600, step: 5,
+				value: Number(cfg.fade ?? 30), min: 0, max: 600, step: 1,
 				format: (v) => (v === 0 ? 'Never' : v < 60 ? `${v} s` : `${Math.floor(v / 60)} min${v % 60 ? ` ${v % 60} s` : ''}`),
+				parse: parseSeconds,
 				onChange: (v, imm) => patchSource(src.name, { fade: v }, { immediate: imm }),
 			}),
 		),
@@ -3171,6 +3277,7 @@ function closeModal() {
 // ------------------------------------------------------------------ animation loop
 
 function frameLoop(ms) {
+	if (S.view !== 'sources') return requestAnimationFrame(frameLoop);
 	const t = ms / 1000;
 
 	// Main pet stage
@@ -3236,30 +3343,30 @@ function wireEvents() {
 		if (e.key === 'Escape' && !$('#modal').hidden) closeModal();
 	});
 	window.addEventListener('focus', () => {
-		if (S.data) refreshState({ preserveFocus: true }).catch(() => {});
+		if (S.data && S.view === 'sources') refreshState({ preserveFocus: true }).catch(() => {});
 	});
-	window.addEventListener('hashchange', () => {
-		const hTarget = parseHash();
-		if (!hTarget || !S.data) return;
-		const hit = S.data.sources.find((s) => s.name === hTarget.name && (!hTarget.kind || s.kind === hTarget.kind));
-		if (hit) selectSource(hit.name);
-	});
+	window.addEventListener('hashchange', route);
+	for (const b of document.querySelectorAll('#viewSwitch button')) b.addEventListener('click', () => goView(b.dataset.view));
 }
 
 // The Update card (/update/update.js): send edits still waiting before OBS closes for an update
+// (and the character editor's, once it's loaded)
 window.OBSPET_UPDATE_HOOKS = {
 	async beforeUpdate() {
 		for (const name of [...S.pendingPatches.keys()]) await flushPatch(name);
 		if ($('#saved').classList.contains('err')) throw new Error("a setting didn't save");
+		await window.OBSPET_EDITOR?.beforeUpdate();
 	},
-	canReload: () => S.pendingPatches.size === 0,
+	canReload: () => S.pendingPatches.size === 0 && (window.OBSPET_EDITOR?.canReload() ?? true),
 };
 
 async function start() {
 	wireEvents();
 	requestAnimationFrame(frameLoop);
+	if (KEY) route();
 
 	if (!KEY) {
+		$('#viewSwitch').hidden = true;
 		$('#app').hidden = true;
 		$('#emptyState').hidden = false;
 		$('#emptyState').replaceChildren(h('div', { class: 'empty-box' },

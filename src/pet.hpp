@@ -136,7 +136,6 @@ struct Pet {
 	std::string name, label_after;
 	uint32_t label_color = 0xFFDEE4EC;
 	Hear hear = Hear::Both;
-	double mood_gap = 30;
 	Mixer *mixer = nullptr;                  // the source's audio
 	std::map<std::string, ClipPtr> clips;    // decoded sounds by path (nullptr: won't play)
 	MoodProfile mood;

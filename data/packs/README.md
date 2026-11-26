@@ -24,9 +24,9 @@ Each bundled character made from someone else's art has a `LICENSE.txt` naming t
 
 ## Making a character in the editor
 
-The easy way. In the Pet's properties, click **Open pet editor**. The editor opens in your browser:
+The easy way. In the Pet's properties, click **Edit characters** (or open **OBSPETS Settings** and click **Characters** at the top). The editor opens in your browser:
 
-- **New character** starts one. A built-in character can be changed too: the first change saves it as your own copy, and the built-in one stays as it was.
+- **+ New**, next to the character picker, starts one. A built-in character can be changed too: the first change saves it as your own copy, and the built-in one stays as it was.
 - **A sprite sheet with every animation:** drop it anywhere on the page, or click **Add a sprite sheet…**. You only add it once:
   - Each animation is a colored card along the top, playing its frames. The sheet below shows each card's frames in its color.
   - Each row with drawings starts as a card, and its name is a guess. If a preview does something else, pick the right name under it.
@@ -55,7 +55,7 @@ A character made in the editor is a folder like any other pack, plus the editor'
 | `source/sheet.png` | The sprite sheet the animations were picked from, if they were. `pack.json`'s `source` says which cells each one uses. Not exported. |
 | `sheet.png`, `pack.lua` | Made from the files above every time it saves. Don't edit these by hand: the next save writes them again. |
 
-To work on the editor's page without OBS, run `node tools/editor-dev.mjs` in the plugin's folder and open the address it prints.
+To work on the editor without OBS, run `node tools/editor-dev.mjs` in the plugin's folder and open the address it prints.
 
 ## Making a character by hand
 

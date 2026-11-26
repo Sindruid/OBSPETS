@@ -3,6 +3,9 @@
 //   node tools/settings-dev.mjs
 //   -> http://127.0.0.1:8799/settings/?k=dev
 //
+// (Only the Sources view: its editor API is the pack and sheet the previews draw. For the
+// Characters view, use tools/editor-dev.mjs.)
+//
 import { createServer } from 'node:http';
 import { fakeUpdater } from './fake-updater.mjs';
 import fs from 'node:fs';

@@ -16,7 +16,6 @@ not, see <https://www.gnu.org/licenses/>
 
 #include "chat-server.hpp"
 #include "chat-source.hpp"
-#include "editor.hpp"
 #include "hub.hpp"
 #include "pet.hpp"
 #include "settings.hpp"
@@ -122,7 +121,6 @@ bool obs_module_load(void)
 	obs_frontend_add_event_callback(on_event, nullptr);
 	obs_frontend_add_tools_menu_item("OBSPETS: Add a pet to this scene", add_pet, nullptr);
 	obs_frontend_add_tools_menu_item("OBSPETS: Settings", [](void *) { open_settings(); }, nullptr);
-	obs_frontend_add_tools_menu_item("OBSPETS: Pet editor", [](void *) { open_editor(""); }, nullptr);
 	obs_log(LOG_INFO, "loaded (version %s), backend %s", PLUGIN_VERSION, Hub::backend().c_str());
 	return true;
 }
