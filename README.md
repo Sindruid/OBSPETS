@@ -1,6 +1,6 @@
 # OBSPETS plugin
 
-OBSPETS is an OBS Studio plugin (Windows only) that adds a pixel pet to your scene. It reacts to follows, subs, bits, raids, channel points and chat on Twitch and Kick.
+OBSPETS is an OBS Studio plugin (Windows only) that adds a pet to your scene. It reacts to follows, subs, bits, raids, channel points and chat on Twitch and Kick.
 
 It adds:
 
