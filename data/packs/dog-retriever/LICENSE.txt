@@ -1,0 +1,9 @@
+Art: Pet Dogs Pack by LuizMelo, https://luizmelo.itch.io/pet-dogs-pack
+License: Creative Commons Zero v1.0 Universal (CC0), https://creativecommons.org/publicdomain/zero/1.0/
+"This pack - Pet Dogs Pack Asset Pack is Creative Commons Zero (CC-0). Can be used in commercial
+and non-commercial projects."
+
+OBSPETS cut this dog's frames to one cell size and laid them out as one sheet. The dog sounds come
+with OBSPETS (data/sounds/dog/, see data/sounds/SOURCES.md).
+
+If you like this dog, the artist's other work is at https://luizmelo.itch.io/: tip what you can.

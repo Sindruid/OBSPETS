@@ -1,0 +1,26 @@
+# Exclude everything
+/*
+
+# Except for default project files
+!/cmake
+!/data
+!/deps
+!/src
+!/tools
+!.clang-format
+!.gersemirc
+!.gitignore
+!buildspec.json
+!CMakeLists.txt
+!CMakePresets.json
+!LICENSE
+!README.md
+
+# Exclude lock files
+*.lock.json
+
+# Exclude CMake build number cache
+/cmake/.CMakeBuildNumber
+
+# Packaged setup .exe and zip (tools/package.py)
+/dist/

@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pet editor</title>
+<meta name="theme-color" content="#0a0a0a">
+<link rel="stylesheet" href="editor.css">
+</head>
+<body>
+<header class="top">
+	<h1 class="title">Pet editor</h1>
+	<div class="picker">
+		<select id="pack" aria-label="Character"></select>
+		<button id="gallery" class="ghost">All characters</button>
+		<button id="new" class="ghost">New character</button>
+	</div>
+	<div class="grow"></div>
+	<span id="saved" class="saved"></span>
+	<button id="use" class="primary" hidden>Show on my Pet</button>
+	<div class="menu-wrap">
+		<button id="more" class="ghost icon" aria-label="More">&#8943;</button>
+		<div id="menu" class="menu" hidden>
+			<button data-act="copy">Make a copy</button>
+			<button data-act="export">Export to a file</button>
+			<button data-act="import">Import from a file&#8230;</button>
+			<hr>
+			<button data-act="remove" class="danger">Delete this character</button>
+		</div>
+	</div>
+</header>
+
+<div id="banner" class="banner" hidden></div>
+
+<main id="app">
+	<section class="stage-col">
+		<div class="stage">
+			<canvas id="stage" width="480" height="360"></canvas>
+			<div class="stage-labels" id="stageLabels" aria-hidden="true"></div>
+			<div class="stage-empty" id="stageEmpty" hidden>
+				<div class="big">Drop your <b>sprite sheet</b> to start</div>
+				<div class="muted">One image with every animation, or just an idle one: a PNG strip, a GIF, or several frames at once.</div>
+			</div>
+			<div class="stage-bar">
+				<span id="playing" class="playing"></span>
+				<div class="grow"></div>
+				<button id="hear" class="ghost small" title="Play each of its voice sounds, with its animations">&#9654; Hear it</button>
+				<button id="turn" class="ghost small" title="Turn it around">Flip</button>
+				<button id="guides" class="ghost small" title="Show the body guides">Guides</button>
+				<button id="bg" class="ghost small" title="Change the background">Background</button>
+				<button id="zoomOut" class="ghost small zoom" aria-label="Smaller" title="Smaller">&minus;</button>
+				<button id="zoomIn" class="ghost small zoom" aria-label="Bigger" title="Bigger">+</button>
+			</div>
+		</div>
+		<div class="try">
+			<label for="trySel">Try it in OBS</label>
+			<div class="row">
+				<select id="trySel"></select>
+				<button id="tryGo">Play</button>
+			</div>
+		</div>
+	</section>
+
+	<section class="edit-col">
+		<nav class="tabs" role="tablist">
+			<button role="tab" data-tab="anims" class="on">Animations</button>
+			<button role="tab" data-tab="sounds">Sounds</button>
+			<button role="tab" data-tab="details">Details</button>
+			<button role="tab" data-tab="colors">Colors</button>
+		</nav>
+
+		<div class="tab" id="tab-anims">
+			<div class="sheet-bar" id="sheetBar" hidden></div>
+			<div class="slots" id="slots"></div>
+			<h3 class="sub">Jump poses <span class="muted">Single frames held mid-jump.</span></h3>
+			<div class="slots poses" id="poses"></div>
+			<div class="inspector" id="inspector"></div>
+		</div>
+
+		<div class="tab" id="tab-sounds" hidden>
+			<p class="hint">Drop a sound on a row, or click <b>+ Add</b>. Any format works. Each one is trimmed and set to a stream-friendly volume.</p>
+			<div class="role soundset" id="soundset"></div>
+			<h3 class="sub">Voice</h3>
+			<div class="list roles" id="voice"></div>
+			<h3 class="sub">Body</h3>
+			<div class="list roles" id="foley"></div>
+		</div>
+
+		<div class="tab" id="tab-details" hidden>
+			<div class="form">
+				<label>Name<input id="f-name" maxlength="40"></label>
+				<label>What it is<input id="f-describe" maxlength="160" placeholder="a small orange pixel-art fox"><small>Chat reactions use this to know what your pet is.</small></label>
+				<label>Personality<textarea id="f-personality" maxlength="500" rows="3" placeholder="playful and nosy, a show-off, scared of thunder"></textarea><small>How it behaves, and what it loves and fears. Chat reactions follow this.</small></label>
+				<div class="cols">
+					<label>Pronouns
+						<select id="f-pronouns"><option value="">they</option><option>he</option><option>she</option><option>it</option></select>
+					</label>
+					<label>Your drawings face
+						<div class="seg" id="f-faces"><button data-v="right">Right</button><button data-v="left">Left</button></div>
+					</label>
+				</div>
+			</div>
+			<div class="form">
+				<div class="card-head"><h3 class="sub">Body</h3><label class="switch"><input type="checkbox" id="f-auto"> Measure from the animations</label></div>
+				<p class="hint">Where hearts, marks and sparks appear, and how close it walks to things. Turn on <b>Guides</b> under the preview to see them.</p>
+				<div id="bodyFields" class="grid2"></div>
+			</div>
+			<div class="form">
+				<div class="card-head"><h3 class="sub">Movement</h3><button id="speedReset" class="ghost small">Reset</button></div>
+				<div id="speedFields" class="grid2"></div>
+				<p class="muted small" id="cellInfo"></p>
+			</div>
+		</div>
+
+		<div class="tab" id="tab-colors" hidden>
+			<p class="hint">Change the pet's own colors without redrawing it, and pick the colors of the little marks it draws around itself.</p>
+			<h3 class="sub">The pet</h3>
+			<div class="list colors" id="look"></div>
+			<h3 class="sub">Marks</h3>
+			<div class="list colors" id="colors"></div>
+		</div>
+	</section>
+</main>
+
+<div id="modal" class="modal" hidden><div class="dialog" id="dialog"></div></div>
+<div id="toast" class="toast" hidden></div>
+<div id="dropHint" class="drop-hint" hidden><div>Drop to add</div></div>
+<input type="file" id="filePick" hidden multiple>
+
+<script src="editor.js"></script>
+</body>
+</html>

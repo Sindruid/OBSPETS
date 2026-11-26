@@ -1,0 +1,7 @@
+OBSPETS {version}
+
+The OBSPETS plugin is free software under the GNU General Public License, version 2 or later
+(LICENSE.txt). Source code:
+    {source}
+It includes Lua 5.4 (MIT license, see THIRD-PARTY.txt).
+The bundled characters, the website and the chat-reaction service are separate from the plugin.

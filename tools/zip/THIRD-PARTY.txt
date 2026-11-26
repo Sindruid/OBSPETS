@@ -1,0 +1,40 @@
+OBSPETS includes Lua 5.4.7 (https://www.lua.org), built into obspet.dll to read character packs.
+
+Lua is distributed under the MIT license:
+
+Copyright (C) 1994-2024 Lua.org, PUC-Rio.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+
+------------------------------------------------------------------------------
+
+OBSPETS's built-in pet sounds (data/sounds/) are not covered by OBSPETS's GPL. The
+default set's voice was synthesised for OBSPETS. The other sounds were edited from
+royalty-free sound libraries (the Sonniss #GameAudioGDC bundles and the Fab
+Standard License) and ship as part of OBSPETS under those licenses: use them with
+OBSPETS, but don't extract them to sell or share as a sound library.
+
+------------------------------------------------------------------------------
+
+Bundled characters made from others' art (data/packs/, each with a LICENSE.txt):
+
+- cat-ginger, cat-black, cat-siamese, cat-sphynx, cat-fluffy, cat-tabby: Pet Cats
+  Pack by LuizMelo (https://luizmelo.itch.io/pet-cat-pack), CC0.
+- dog-retriever, dog-akita, dog-great-dane, dog-schnauzer, dog-saint-bernard, dog-husky:
+  Pet Dogs Pack by LuizMelo (https://luizmelo.itch.io/pet-dogs-pack), CC0.

@@ -1,0 +1,8 @@
+Art: Pet Cats Pack by LuizMelo, https://luizmelo.itch.io/pet-cat-pack
+License: Creative Commons Zero v1.0 Universal (CC0), https://creativecommons.org/publicdomain/zero/1.0/
+"This package can be used freely and commercially. Credit is not required, but I would appreciate it."
+
+OBSPETS cut this cat's frames to 32x32 cells and laid them out as one sheet. The cat sounds come
+with OBSPETS (data/sounds/cat/, see data/sounds/SOURCES.md).
+
+If you like this cat, the artist's other work is at https://luizmelo.itch.io/: tip what you can.

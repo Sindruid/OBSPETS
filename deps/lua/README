@@ -1,0 +1,3 @@
+Lua 5.4.7 (released 13 Jun 2024), from https://www.lua.org. MIT license: see the notice at the end of
+src/lua.h (the installer ships it in THIRD-PARTY.txt). OBSPETS uses it only to read pack.lua files
+as data, so only the library is here: no manual, interpreter, compiler or Makefiles.

@@ -1,0 +1,84 @@
+/* OBSPETS Chat. The variables come from the source's properties (chat.js sets them in #vars);
+   the streamer's own CSS goes in #custom, after this. */
+:root {
+  --font: "Segoe UI", system-ui, sans-serif; --size: 24px; --weight: 600; --style: normal;
+  --text: #ece4de; --stroke: none; --name: #a6c1db;
+  --bg: rgba(15, 15, 20, .7); --radius: 8px; --pad: 8px; --gap: 6px;
+  --emote: 1.6em; --role: #e0483c; --mention: #f0b43c; --mention-soft: rgba(240, 180, 60, .22);
+  --highlight-soft: rgba(145, 70, 255, .3); --in: .32s;
+}
+html, body { margin: 0; height: 100%; overflow: hidden; background: transparent; }
+
+#list {
+  position: absolute; left: 0; right: 0; bottom: 0; box-sizing: border-box;
+  display: flex; flex-direction: column; align-items: flex-start; gap: var(--gap); padding: 10px 14px;
+}
+.down #list { top: 0; bottom: auto; }
+.right #list { align-items: flex-end; text-align: right; }
+
+.msg {
+  position: relative; max-width: 100%; box-sizing: border-box;
+  font: var(--style) var(--weight) var(--size)/1.35 var(--font); color: var(--text);
+  overflow-wrap: anywhere; text-shadow: var(--stroke);
+}
+.msg img { vertical-align: middle; }
+.head { white-space: nowrap; }
+.name-line .head { display: block; }
+.name { color: var(--name); }
+.colon { margin-left: -.1em; }
+.head + .text { margin-left: .35em; }
+.name-line .head + .text { margin-left: 0; }
+.text { unicode-bidi: isolate; }
+.name { unicode-bidi: isolate; }
+.emote { height: var(--emote); margin: -.25em .06em; vertical-align: middle; }
+.msg.big .emote { height: calc(var(--emote) * 2); margin: .05em .08em; }
+.badge { height: 1.05em; margin: 0 .25em 0 0; vertical-align: -.17em; }
+.pronouns {
+  font-size: .62em; font-weight: 600; padding: .08em .45em; margin-right: .4em; border-radius: .5em;
+  background: rgba(255, 255, 255, .16); text-shadow: none; vertical-align: .18em;
+}
+.tag {
+  font-size: .6em; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; padding: .1em .45em;
+  margin-right: .45em; border-radius: .4em; background: var(--mention); color: #111; text-shadow: none; vertical-align: .2em;
+}
+.reply-to {
+  display: block; font-size: .7em; opacity: .7; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  max-width: 100%;
+}
+.msg.action .text { font-style: italic; }
+
+/* a message Auto mod deleted, waiting for the pet to rip it out */
+.msg.struck { opacity: .55; transition: opacity .25s; }
+.msg.struck .text { text-decoration: line-through; text-decoration-color: #e0483c; text-decoration-thickness: .12em; }
+
+/* a box behind each message, or one panel behind all of them */
+.bg-box .msg { background: var(--bg); border-radius: var(--radius); padding: calc(var(--pad) * .55) var(--pad); }
+.bg-panel #list { background: var(--bg); border-radius: var(--radius); padding: var(--pad); transition: opacity .4s; }
+.bg-panel #list:empty { opacity: 0; }
+
+/* the broadcaster, mods and VIPs: a short bar beside the message */
+.marks .msg.role::before {
+  content: ""; position: absolute; left: -7px; top: .3em; bottom: .3em; width: 3px; border-radius: 2px;
+  background: var(--role);
+}
+.right.marks .msg.role::before { left: auto; right: -7px; }
+.bg-box.marks .msg.role::before { left: 0; top: 0; bottom: 0; border-radius: var(--radius) 0 0 var(--radius); width: 4px; }
+.bg-box.right.marks .msg.role::before { left: auto; right: 0; border-radius: 0 var(--radius) var(--radius) 0; }
+
+.msg.mention, .msg.highlight { border-radius: var(--radius); }
+.msg.mention { background: linear-gradient(90deg, var(--mention-soft), transparent 92%); padding-left: .35em; padding-right: .35em; }
+.msg.highlight { background: linear-gradient(90deg, var(--highlight-soft), transparent 92%); padding-left: .35em; padding-right: .35em; }
+.bg-box .msg.mention { background: linear-gradient(90deg, var(--mention-soft), transparent), var(--bg); }
+.bg-box .msg.highlight { background: linear-gradient(90deg, var(--highlight-soft), transparent), var(--bg); }
+
+#note {
+  position: absolute; left: 14px; right: 14px; bottom: 14px; font: 600 16px/1.4 "Segoe UI", system-ui, sans-serif;
+  color: #ece4de; text-shadow: 0 1px 3px #000; opacity: .85;
+}
+#note:empty { display: none; }
+
+@keyframes obspet-slide { from { opacity: 0; transform: translateY(12px); } }
+@keyframes obspet-slide-down { from { opacity: 0; transform: translateY(-12px); } }
+@keyframes obspet-fade { from { opacity: 0; } }
+@keyframes obspet-pop { from { opacity: 0; transform: scale(.85); } 70% { transform: scale(1.03); } }
+@keyframes obspet-out { to { opacity: 0; } }
