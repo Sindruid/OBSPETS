@@ -166,12 +166,10 @@ void Mixer::loop()
 	std::vector<float> L(n), R(n);
 	uint64_t t = 0;
 	std::unique_lock<std::mutex> lk(m_);
+	// It never stops: silence goes out between sounds. A stream that stopped and restarted would
+	// start each sound "now", behind OBS's mix, so OBS would cut or stretch the sound's start
+	// ("adding N ms of audio buffering") after every quiet spell.
 	while (!stop_) {
-		if (voices_.empty()) {
-			cv_.wait(lk, [this] { return stop_ || !voices_.empty(); });
-			t = 0;   // a new run of sound starts now
-			continue;
-		}
 		std::fill(L.begin(), L.end(), 0.0f);
 		std::fill(R.begin(), R.end(), 0.0f);
 		for (auto &v : voices_) {

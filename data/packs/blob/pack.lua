@@ -24,6 +24,7 @@ return {
 		sleep = { row = 6, frames = 4, fps = 2 },
 		paw = { row = 7, frames = 6, fps = 9, whoosh = 2, hit = 3 },
 		scared = { row = 9, frames = 4, fps = 14 },
+		angry = "scared",   -- the same puffed-up wobble
 	},
 	poses = {
 		crouch = { row = 8, col = 0 },

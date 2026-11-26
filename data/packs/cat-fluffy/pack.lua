@@ -18,6 +18,9 @@ return {
 		run = { row = 5, frames = 8, fps = 13 },
 		sleep = { row = 6, frames = 1, fps = 1 },
 		paw = { row = 7, frames = 2, fps = 6, whoosh = 0, hit = 1 },
+		stretch = { row = 8, frames = 13, fps = 9 },
+		beg = { row = 7, frames = 2, fps = 3 },    -- sitting up, a paw raised
+		-- no frames for scared or angry: Startled, Scared and Angry stay off unless one stands in
 	},
 	-- jumps: crouched low in the stretch, then frames from the run
 	poses = {

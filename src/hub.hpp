@@ -37,10 +37,20 @@ struct HubEvent {
 // What the mood engine needs from a Pet. One Pet acts out each chat reaction: one that's on screen.
 struct MoodProfile {
 	bool on = false, allow_delete = true;
+	bool automod_only = false;   // no chat reactions: chat is only checked for what Auto mod deletes
+	bool show_deletes = true;    // a pet rips what Auto mod deletes out of the chat on stream (else it just goes)
 	double gap = 15;     // s it lets chat be after a reaction
 	std::string name, describe, pronouns, personality, state;
 	std::vector<std::string> ignore;   // chatters it never reacts to (bots), lower case
 	std::vector<std::string> skip;     // chat reactions it's set not to do (the model doesn't offer them)
+};
+
+// What the AI makes of one line the streamer typed into the settings page's chat tester.
+struct ChatTry {
+	std::string error;        // set: it couldn't ask (not signed in, paused, no credit, ...): say this
+	std::string kind = "none", why;
+	bool del = false;         // Auto mod would delete the message
+	MoodProfile prof;         // the pet it asked for (its switches: on, automod_only, allow_delete)
 };
 
 class PetClient {
@@ -71,6 +81,14 @@ struct HubStatus {
 	std::string reward_title;   // the reward the states below are about
 	Reward reward = Reward::Unknown, kick_reward = Reward::Unknown;
 	std::string reward_msg, kick_reward_msg;   // what went wrong, when it did
+	// Auto mod, for the whole account (sindruid.com keeps it): on or off, and what it deletes
+	bool automod_on = true;
+	std::vector<std::string> automod;
+	double ai_gap = 5;   // the account asks the AI about chat at most this often (s)
+	// the account's own React to chat switch (moods_server_on is also off while the service is paused)
+	// and its daily limit on reactions
+	bool react_on = true;
+	int daily_cap = 0;
 };
 
 class Hub {
@@ -84,15 +102,21 @@ public:
 	void set_profile(PetClient *p, const MoodProfile &m);
 
 	HubStatus status();
+	std::string api_token();   // this OBS's Stream Tools token ("" = signed out)
 	void sign_in(const std::string &platform);   // "twitch" or "kick": signs in, or adds it to the account
 	void sign_out();
 	void cancel_sign_in();
 	void open_sign_in_page();   // the browser again, at the page for the current code
 	void delete_message(const std::string &msg_id);   // a message Auto mod caught, now (on its own platform)
 	bool gone(const std::string &msg_id);   // deleted from chat by a mod, a ban or a clear (not by the pet): never show it again
-	void check_reward(const std::string &title);      // looks whether the channel-point reward is there
+	void set_automod(bool on, const std::vector<std::string> &cats);   // saves Auto mod for the account
+	// saves the account's reactions to chat: on or off, the time between them (s), a daily limit
+	void set_reacting(bool on, int gap_s, int daily_cap);
+	void check_reward(const std::string &title, bool again = false);   // looks whether the channel-point reward is there (again: even if known)
 	void ensure_reward(const std::string &title);     // makes the channel-point reward where it's missing
-	void test_chat(const std::string &user, const std::string &text);   // as if said in chat
+	// The chat tester: how `pet` would take `text` from a viewer, asked right away (blocks up to
+	// ~5 s; not the UI thread). Nothing is deleted and the pet does nothing: the page shows the answer.
+	ChatTry try_chat(PetClient *pet, const std::string &user, const std::string &text);
 	std::string chat_badges(const std::string &channel);   // OBSPETS Chat's badge pictures (blocks; not the UI thread)
 
 	static std::string backend();   // https://sindruid.com, or OBSPET_BACKEND for testing
@@ -146,7 +170,7 @@ private:
 	std::string chat_color(const std::string &user_id);
 	bool kick_ids();   // the channel's ids for Kick's chat socket, from kick.com
 	void check_scopes(const std::string &pf);   // what the platform's token may do: sets *_missing_
-	PetClient *mood_pet();   // (with m_ held) the Pet that acts out chat reactions: one with them on, on screen if any
+	PetClient *mood_pet();   // (with m_ held) the Pet that acts out chat reactions: one with them on, on screen if any (else an Auto-mod-only one)
 	void kick_event(const std::string &event, const std::string &data);
 	// A message (id), everything a chatter said (user), or all of chat (both empty) was deleted.
 	void mark_gone(const std::string &id, const std::string &user);
@@ -179,9 +203,12 @@ private:
 	double reward_checked_ = -1e9;   // when it last looked (a failed look waits a minute)
 	void set_reward(const std::string &pf, const std::string &title, Reward r, const std::string &msg = "");
 	void signed_out(const std::string &why);   // forget the account, say why
-	// from sindruid.com/streamtools/obspets
+	// the account's settings, kept by sindruid.com (changed on the settings page)
 	bool cfg_moods_on_ = true, cfg_allow_delete_ = true;
+	std::vector<std::string> cfg_automod_{"bots", "scams", "slurs"};   // (the site's defaults, until it says)
 	double cfg_gap_ = 5, cfg_at_ = -1e9;
+	bool cfg_react_on_ = true;
+	int cfg_daily_cap_ = 0;
 	// moods
 	std::deque<Line> lines_;
 	double last_ask_ = -1e9, paused_until_ = 0, last_react_at_ = -1e9;

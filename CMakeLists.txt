@@ -33,7 +33,7 @@ target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE obspet-lua)
 
 target_compile_features(${CMAKE_PROJECT_NAME} PRIVATE cxx_std_17)
 target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE NOMINMAX)
-target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE ws2_32 shell32 crypt32)
+target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE ws2_32 shell32 crypt32 gdi32 ole32 bcrypt)
 
 target_sources(
   ${CMAKE_PROJECT_NAME}
@@ -50,6 +50,8 @@ target_sources(
     src/chat-server.cpp
     src/chat-source.cpp
     src/editor.cpp
+    src/settings.cpp
+    src/updater.cpp
 )
 
 set_target_properties_plugin(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME ${_name})

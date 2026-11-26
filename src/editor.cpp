@@ -337,6 +337,12 @@ std::string pack_json(const PackEntry &e)
 		o += "]}";
 		first = false;
 	}
+	o += "},\"stands\":{";
+	first = true;
+	for (auto &kv : P->stand_ins) {
+		o += (first ? "" : ",") + jstr(kv.first) + ":" + jstr(kv.second);
+		first = false;
+	}
 	o += "},\"poses\":{";
 	first = true;
 	for (auto &k : P->own_poses) {

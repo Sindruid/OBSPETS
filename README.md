@@ -21,10 +21,11 @@ The build is based on [obs-plugintemplate](https://github.com/obsproject/obs-plu
 
 | Path | What |
 |---|---|
-| `src/` | The plugin. `plugin-main` registers everything. `pet-source.cpp`, `pet.cpp` and `pet-render.cpp` are the pet source, its behavior and its drawing. `chat-source.cpp` is OBSPETS Chat, and `chat-server.cpp` is the loopback HTTP server its page talks back to. `editor.cpp` is the character editor's API. `pack.cpp` loads packs. `hub.cpp` holds the account, Twitch EventSub, Kick's chat socket and chat reactions. `net.cpp` does HTTP and WebSockets over OBS's libcurl. |
+| `src/` | The plugin. `plugin-main` registers everything. `pet-source.cpp`, `pet.cpp` and `pet-render.cpp` are the pet source, its behavior and its drawing. `chat-source.cpp` is OBSPETS Chat, and `chat-server.cpp` is the loopback HTTP server its page talks back to. `editor.cpp` is the character editor's API. `updater.cpp` is the Update card. `pack.cpp` loads packs. `hub.cpp` holds the account, Twitch EventSub, Kick's chat socket and chat reactions. `net.cpp` does HTTP and WebSockets over OBS's libcurl. |
 | `deps/lua/` | Lua 5.4.7's library (MIT), built as a static library and used only to read `pack.lua` in a sandbox. Don't edit it. |
-| `data/` | Installed to `obspet/data/`: `locale/`, OBSPETS Chat's page (`chat/`), the character editor (`editor/`), the bundled packs (`packs/`) and the built-in sounds (`sounds/`, see `data/sounds/SOURCES.md`). |
+| `data/` | Installed to `obspet/data/`: `locale/`, OBSPETS Chat's page (`chat/`), the character editor (`editor/`), the settings page (`settings/`), the Update card both pages load (`update/`), the bundled packs (`packs/`) and the built-in sounds (`sounds/`, see `data/sounds/SOURCES.md`). |
 | `tools/package.py` | Builds the installer and the zip. |
+| `tools/fake-updater.mjs` | A pretend update for the dev servers, to work on the Update card (`data/update/`) without OBS: `FAKE_UPDATE=9.9.0 node tools/settings-dev.mjs` (see the file for failures and the other states). |
 | `tools/editor-dev.mjs` | Serves the character editor with a fake API, to work on `data/editor/` without OBS (`node tools/editor-dev.mjs`). |
 | `tools/installer/` | The Inno Setup installer (`obspet.iss`) and its art (`make-art.py`). |
 | `tools/zip/` | The text files that ship in the zip. |
@@ -38,6 +39,7 @@ The build is based on [obs-plugintemplate](https://github.com/obsproject/obs-plu
 
 - "Find it by itself" prefers a visible OBSPETS Chat, then a source with "chat" in its name or URL.
 - Auto mod deletes spam on the platform (Twitch Helix or Kick's public API) as soon as it's caught, so it doesn't depend on the overlay. An OBSPETS Chat is told first and keeps the line crossed out for the pet to rip out, then drops it after 20 s if no pet does.
+- **Auto mod** has its own page in a Pet's settings. Its on/off switch and categories belong to the account (sindruid.com keeps them; OBS saves them with `POST /streamtools/api/pet/config`), plus a per-source switch. It runs whether or not the pet reacts to chat: with chat reactions off, the model is offered only "none" and "yank", and nothing is asked when Auto mod can't delete anything. **On stream** picks whether a pet rips a deleted line out of the chat overlay (crossed out) or the line just drops out (`automod_show`). Either way the message is deleted on the platform at once. Before 0.6, "Auto mod only" hid the pet: a source with it set now has chat reactions off and quiet deletes.
 
 OBSPETS Chat is the page in `data/chat/`, loaded in a private browser source.
 
@@ -50,7 +52,7 @@ OBSPETS Chat is the page in `data/chat/`, loaded in a private browser source.
 ## Pet properties
 
 - **Sign-in status** at the top, with the next step. If a sign-in is missing a permission added later, it says so and offers to sign in again (`Hub::check_scopes`).
-- **Who hears it:** you and your stream, only your stream, only you, or nobody. This is the source's audio monitoring type.
+- **Who hears it:** you and your stream, only your stream, or nobody. This is the source's audio monitoring. On OBS 32 and newer there's no echo to worry about: when Desktop Audio captures the device you monitor on, OBS gives the stream the pet once. On OBS 31 the page also offers "only you" and warns about the echo.
 - **Try a reaction** plays reactions for testing. "Someone says hi in chat" goes through the real chat model and uses a little credit.
 - **Moved or resized:** the pet source is meant to fill the canvas. If its box is moved or scaled, it still maps the chat and other sources into its own pixels, and offers **Fit it to the screen**.
 - **How often it reacts to chat:** Rarely, Sometimes or Often (at most every 60, 15 or 8 s).
@@ -62,6 +64,23 @@ OBSPETS Chat is the page in `data/chat/`, loaded in a private browser source.
 - With several OBSPETS sources, chat reactions go to one that's visible in the program.
 
 Settings saved by versions before 0.5 are migrated when a pet loads.
+
+## Updating from inside OBS
+
+The settings page and the character editor show an **Update available** card when sindruid.com has a newer OBSPETS (`src/updater.cpp`, `data/update/update.js`). The plugin asks `GET /streamtools/api/pet/update` soon after OBS starts and every 6 hours.
+
+Clicking the card explains what happens. **Update and restart OBS** then:
+
+1. Saves what the page hasn't saved yet.
+2. Downloads the installer with this OBS's sign-in and checks its SHA-256.
+3. Starts it in update mode (`/VERYSILENT /OBSPETUPDATE=<update.txt>`, see the top of `obspet.iss`). Windows asks for permission. If it gets none, nothing changes.
+4. Once the installer has permission, it writes a `ready` file. The plugin then leaves a handoff for the next OBS (`update-handoff.json`: the loopback port, the key encrypted with DPAPI, the open pages) and closes OBS the normal way, so scenes are saved.
+5. The installer waits for OBS to be gone (2 minutes at most), installs, and opens the same OBS again with its own command line (without `--startstreaming` and the like), not elevated.
+6. The new OBS listens on the same port with the same key, so the open pages reconnect and reload into the new version. If the port is taken, it opens them again instead. They say whether the update installed.
+
+It refuses while OBS is streaming, recording or running the replay buffer or virtual camera, or while another OBS is open. A copy that isn't in `%ProgramData%\obs-studio\plugins\obspet` (installed by hand) gets a link to the download page instead. Files go to `%TEMP%\obspet-update\`, including `setup.log`.
+
+To publish an update, bump `buildspec.json`, rebuild, run `tools/package.py`, then deploy the backend (`npm run deploy` copies the newest installer and its SHA-256).
 
 ## Known limits
 

@@ -37,6 +37,7 @@ HttpResp chat_api(const HttpReq &r);
 namespace chat_server {
 bool start();   // once; later calls return whether it runs
 void stop();
+bool is_stopping();
 int port();
 const std::string &key();
 std::string base_url();   // http://127.0.0.1:<port>

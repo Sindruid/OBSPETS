@@ -32,18 +32,26 @@ return {
 	--   { row = 0, frames = 4, fps = 5 }            frames left to right along a row (row 0 = top)
 	--   { row = 0, col = 4, frames = 4, fps = 5 }   ... starting at column 4
 	--   { cells = { {0, 0}, {1, 0}, {0, 1} }, fps = 5 }   any cells, as {column, row}, in order
-	-- Columns and rows count from 0.
+	-- Columns and rows count from 0. Or another one's name, to use it in this one's place:
+	--   angry = "scared"
+	-- A missing one borrows another, except beg, scared and angry: the chat reactions that need
+	-- them stay off until it has them (or names a stand-in). So do Curious and Unimpressed without
+	-- look, Zoomies without run, Naps without sleep, and Plays, Swats and Rips without paw.
 	anims = {
 		idle = { row = 0, frames = 4, fps = 5 },     -- sitting, breathing (required)
 		look = { row = 1, frames = 4, fps = 5 },     -- looking around; also "listening"
-		clean = { row = 2, frames = 4, fps = 7 },    -- washing / grooming (contentment)
-		clean2 = { row = 3, frames = 4, fps = 7 },   -- a second washing loop
+		clean = { row = 2, frames = 4, fps = 7 },    -- content: grooming, panting (after alerts, petted)
+		clean2 = { row = 3, frames = 4, fps = 7 },   -- a second content loop (idling, hearts)
 		walk = { row = 4, frames = 8, fps = 10 },
 		run = { row = 5, frames = 8, fps = 14 },
 		sleep = { row = 6, frames = 4, fps = 3 },    -- lying down, z's float up from its head
 		-- a swat. `whoosh`: the frame the swipe sound plays on; `hit`: the frame sparks fly off
 		paw = { row = 7, frames = 6, fps = 9, whoosh = 2, hit = 3 },
-		scared = { row = 9, frames = 8, fps = 12 },  -- startled, puffed up
+		stretch = { row = 10, frames = 8, fps = 9 }, -- before a nap, turning its back on chat
+		call = { row = 11, frames = 4, fps = 10 },   -- a bark or meow: plays only with its voice sound
+		beg = { row = 12, frames = 4, fps = 4 },     -- sitting up for attention (Begs)
+		scared = { row = 9, frames = 8, fps = 12 },  -- startled, puffed up (Startled, Scared)
+		angry = "scared",                            -- cross at chat (Angry): here, scared stands in
 	},
 
 	-- Single frames held during jumps, as { row = .., col = .. }. Missing ones fall back:

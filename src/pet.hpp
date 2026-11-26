@@ -91,7 +91,8 @@ enum class ChatKind { None, Ours, Other };
 enum class Hear { Both, Stream, Me, Off };
 
 enum class Mode { Ground, Move, Air };
-enum class On { Floor, Perch };
+// Perch: on top of the chat. Ledge: on top of a kept-off source it may sit on ("sit_on").
+enum class On { Floor, Perch, Ledge };
 
 // One pet. Its settings are the source's, with its own character, name, size and chance (`slot`
 // 0 is the first pet: the keys "pack", "name", ...; slot 1 reads "pack2", "name2", ...).
@@ -126,8 +127,11 @@ struct Pet {
 	double W = 1920, H = 1080, px = 5, S = 5, floor_px = 24;
 	std::string perch_name, alert_name;
 	std::vector<std::string> avoid_names;
+	std::set<std::string> sit_names;   // the kept-off sources it may also sit on top of
 	double visit = 0.5, naps = 1, energy = 1;
 	bool reactions = true, twitch_alerts = true, perch_box = false, other_yank = false;
+	bool automod = true;         // Auto mod runs for this source (the account's categories)
+	bool automod_show = true;    // ... and a pet rips what it deletes out of the chat on stream
 	std::string reward;   // the channel-point reward that pets it ({name} filled in)
 	std::string name, label_after;
 	uint32_t label_color = 0xFFDEE4EC;
@@ -141,7 +145,8 @@ struct Pet {
 
 	// the scene, in the pet's own coordinates: its source is canvas-sized, and if its box was moved
 	// or resized, everything around it is mapped into it (scan)
-	double floorY = 1056, half = 45, alert_x = 960, scan_t = 0;
+	double floorY = 1056, half = 45, alert_x = 960;
+	long long scene_seen = -1;   // the source's scene lookup this pet last worked from (PetSource::scene_n)
 	bool moved = false;   // its box isn't the whole canvas (the properties offer to fix that)
 	std::vector<Seg> segs;
 	bool has_chat = false, has_perch = false, can_yank = false;
@@ -159,9 +164,17 @@ struct Pet {
 	uint32_t px_w = 0, px_h = 0;
 	bool px_staged = false;
 	double perch_y = 0, perch_x0 = 0, perch_x1 = 0;
+	// the tops of the kept-off sources it may sit on, and the one it is on (or jumping to)
+	struct Ledge {
+		std::string name;
+		Box box;              // the source
+		double y, x0, x1;     // where it stands on it
+	};
+	std::vector<Ledge> ledges;
+	std::string ledge;        // the one it is on
+	bool has_ledge = false;   // ... and it is still there
+	Ledge on_ledge;
 	std::string state_sent;
-	double auto_t = 0;
-	std::string auto_chat, auto_alert;   // found by name or URL when the settings name none
 
 	// on screen or not (the source's swap rules)
 	double weight = 5;            // its chance, when the rules pick at random (0: never)
@@ -234,6 +247,23 @@ private:
 };
 
 // The OBSPETS source: its pets, who of them is on screen, and who reacts.
+// What's around the pets in their scene: looked up once for all of a source's pets (scan_scene),
+// in the pets' own coordinates. Each pet works out its floor and perch from it (scan).
+struct SceneView {
+	bool moved = false;   // the source's box isn't the whole canvas
+	bool have_chat = false, have_alert = false;
+	Box chat, alert;
+	std::vector<Box> avoid;   // the kept-off sources that are on screen (not the chat)
+	std::vector<std::pair<std::string, Box>> sit;   // the ones of them it may sit on
+	ChatKind kind = ChatKind::None;
+	std::string chat_name;    // the chat source in use
+	uint32_t chat_h = 0;      // its height (another chat's pixels are read by each pet)
+	long long top = 0, page_h = 0, seq = 0;   // an OBSPETS Chat's layout
+	bool have_seq = false;
+	std::string hide;         // an OBSPETS Chat's hidden chatters
+	std::string auto_chat, auto_alert;   // found by name or URL when the settings name none
+};
+
 struct PetSource : PetClient {
 	PetSource(obs_data_t *settings, obs_source_t *source);
 	~PetSource() override;
@@ -253,7 +283,10 @@ struct PetSource : PetClient {
 	uint32_t height() const { return (uint32_t)H; }
 
 	// any thread
+	static PetSource *from(obs_source_t *s);   // nullptr unless it's an OBSPETS source
 	void test(const std::string &what, const std::string &pack_id = "");   // pack_id: a pet showing that character
+	void try_mood(const std::string &kind, const std::string &user, const std::string &text, bool automod);   // the chat tester
+	void act_out(Pet &p, const std::string &kind, const std::string &user, const std::string &text, bool automod);
 	void reload_pack(const std::string &id = "");   // "": every pet's
 	std::string pack_status();                      // the first pet's character
 	std::vector<PackPtr> packs_shown();
@@ -272,6 +305,11 @@ struct PetSource : PetClient {
 	std::vector<std::unique_ptr<Pet>> pets;   // by slot (changed on the graphics thread, under pets_mu_)
 	std::mutex pets_mu_;
 	Pet *lead_ = nullptr;   // slot 0, there as long as the source is
+
+	// the scene around the pets, looked up 4 times a second for all of them (scan_scene)
+	SceneView scene;
+	long long scene_n = 0;   // how many lookups so far (a pet rescans when this changes)
+	double scene_t = 0, auto_t = 0;
 
 	// the rules
 	enum class Who { Turns, Random, All } who = Who::Turns;
@@ -310,21 +348,31 @@ private:
 };
 
 // the source (pet-source.cpp)
+extern const char *PET_SOURCE_ID;
 void register_pet_source();
 void with_pets(const std::function<void(PetSource &)> &f);   // any thread: holds the list's lock, so only the "any thread" methods and ui (under mu_) are safe
+void add_account_properties(obs_properties_t *p, const std::string &pet_name = "", const std::string &prefix = "");
+std::string pet_name_now(PetSource *pet, obs_data_t *s);
+std::string pet_reward_now(PetSource *pet, obs_data_t *s);
+std::string pet_pack_name(const std::string &id);
+ChatKind pet_chat_kind(PetSource *pet, obs_data_t *s, std::string &name);
+std::string add_chat_for_pet(PetSource *pet);   // UI thread: creates OBSPETS Chat in current scene (links to pet if non-null)
+std::string add_pet_to_scene();                 // UI thread: finds or creates OBSPETS in current scene
 
 // behavior (pet.cpp)
-void scan(Pet &d);
+void scan_scene(PetSource &ps);   // the scene lookup all of a source's pets share
+void scan(Pet &d);                 // a pet's own floor and perch, from that
 void decide(Pet &d);
 void react(Pet &d);
 void merge_ignore(Pet &d);                 // mood.ignore: its own list and its chat's hidden chatters
 bool fit_to_screen(obs_source_t *self);   // UI thread: its box in the program scene back to the whole canvas
 void set_monitoring(obs_source_t *src, Hear h);   // (pet-source.cpp)
+bool obs_prevents_monitoring_echo();             // OBS 32+ (pet-source.cpp)
 void leave_stage(Pet &d, int dir);   // runs and jumps off the canvas (dir: -1 left, 1 right), then is off screen
 void enter_stage(Pet &d, int dir);   // jumps in from that side
 void play(Pet &d, const std::string &a);
 void after(Pet &d, double secs, Next fn);
-void sound(Pet &d, const std::string &key, bool from_mood = false);
+bool sound(Pet &d, const std::string &key, bool from_mood = false);   // -> it played
 void act_visit(Pet &d);
 void interrupt(Pet &d);
 void set_label(Pet &d, const std::string &user, const std::string &color, const std::string *rest = nullptr);

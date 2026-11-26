@@ -19,6 +19,8 @@ not, see <https://www.gnu.org/licenses/>
 #include "editor.hpp"
 #include "hub.hpp"
 #include "pet.hpp"
+#include "settings.hpp"
+#include "updater.hpp"
 
 #include <obs-frontend-api.h>
 #include <obs-module.h>
@@ -83,8 +85,32 @@ static void add_pet(void *)
 
 static void on_event(enum obs_frontend_event ev, void *)
 {
-	if (ev == OBS_FRONTEND_EVENT_EXIT)
+	switch (ev) {
+	case OBS_FRONTEND_EVENT_FINISHED_LOADING:
+		updater_loaded();
+		break;
+	// the Update card waits while any of these runs: updating closes OBS
+	case OBS_FRONTEND_EVENT_STREAMING_STARTING:
+	case OBS_FRONTEND_EVENT_STREAMING_STARTED:
+	case OBS_FRONTEND_EVENT_STREAMING_STOPPED:
+	case OBS_FRONTEND_EVENT_RECORDING_STARTING:
+	case OBS_FRONTEND_EVENT_RECORDING_STARTED:
+	case OBS_FRONTEND_EVENT_RECORDING_STOPPED:
+	case OBS_FRONTEND_EVENT_REPLAY_BUFFER_STARTING:
+	case OBS_FRONTEND_EVENT_REPLAY_BUFFER_STARTED:
+	case OBS_FRONTEND_EVENT_REPLAY_BUFFER_STOPPED:
+	case OBS_FRONTEND_EVENT_VIRTUALCAM_STARTED:
+	case OBS_FRONTEND_EVENT_VIRTUALCAM_STOPPED:
+		updater_output_changed(ev == OBS_FRONTEND_EVENT_STREAMING_STARTING || ev == OBS_FRONTEND_EVENT_RECORDING_STARTING ||
+				       ev == OBS_FRONTEND_EVENT_REPLAY_BUFFER_STARTING);
+		break;
+	case OBS_FRONTEND_EVENT_EXIT:
+		updater_stop();
 		Hub::get().stop();
+		break;
+	default:
+		break;
+	}
 }
 
 bool obs_module_load(void)
@@ -92,8 +118,10 @@ bool obs_module_load(void)
 	register_pet_source();
 	register_chat_source();
 	Hub::get().start();
+	updater_start();
 	obs_frontend_add_event_callback(on_event, nullptr);
 	obs_frontend_add_tools_menu_item("OBSPETS: Add a pet to this scene", add_pet, nullptr);
+	obs_frontend_add_tools_menu_item("OBSPETS: Settings", [](void *) { open_settings(); }, nullptr);
 	obs_frontend_add_tools_menu_item("OBSPETS: Pet editor", [](void *) { open_editor(""); }, nullptr);
 	obs_log(LOG_INFO, "loaded (version %s), backend %s", PLUGIN_VERSION, Hub::backend().c_str());
 	return true;
@@ -102,6 +130,7 @@ bool obs_module_load(void)
 void obs_module_unload(void)
 {
 	obs_frontend_remove_event_callback(on_event, nullptr);
+	updater_stop();
 	Hub::get().stop();
 	chat_server::stop();
 	obs_log(LOG_INFO, "unloaded");

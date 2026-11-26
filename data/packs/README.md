@@ -82,17 +82,23 @@ To work on the editor's page without OBS, run `node tools/editor-dev.mjs` in the
 
 ### Animations
 
-| Name | Used for | Missing? Uses |
+| Name | Used for | Missing? |
 |---|---|---|
-| `idle` | Sitting, breathing. **Required.** | |
-| `look` | Looking around, listening, reacting to an alert | `idle` |
-| `clean` | Washing (contentment) | `idle` |
-| `clean2` | A second washing loop | `clean` |
-| `walk` | Walking | `idle` |
-| `run` | Dashing, zoomies, running to the chat | `walk` |
-| `sleep` | Napping, with z's | `idle` |
-| `paw` | A swat. `whoosh` = the frame the swipe sound plays on, `hit` = the frame sparks fly | `idle` |
-| `scared` | Startled, puffed up, angry | `look` |
+| `idle` | Standing about. **Required.** | |
+| `look` | Watching chat, alerts, listening | Borrows `idle`. Curious and Unimpressed are off |
+| `walk` | Wandering, going to the chat | Borrows `idle` |
+| `run` | Zoomies, raids, dashing to the chat | Borrows `walk`. Zoomies is off |
+| `sleep` | Naps, with z's | Borrows `idle`. Naps is off |
+| `paw` | A swat. `whoosh` = the frame the swipe sound plays on, `hit` = the frame sparks fly | Borrows `idle`. Plays, Swats at chat and Rips a message out are off |
+| `clean` | Content: grooming or panting, after alerts and when petted | Borrows `idle` |
+| `clean2` | A second content loop: idling, soaking up hearts | Borrows `clean` |
+| `stretch` | Before a nap, turning its back on chat | Borrows `clean` |
+| `call` | A bark or meow. Plays only when its voice sound does, so it never calls out silently | Skipped |
+| `beg` | Begging chat for attention | Begs is off |
+| `scared` | Startled, scared off | Startled and Scared are off |
+| `angry` | Cross at chat | Angry is off |
+
+A reaction that needs an animation the character doesn't have stays off, and the Pet's settings say what it needs. A borrowed one would look wrong: a swat that's just idling, a dog that barks without a sound. To use one you do have, name it instead: `angry = "scared"`. The editor calls that a stand-in.
 
 Each animation is written in one of three ways:
 

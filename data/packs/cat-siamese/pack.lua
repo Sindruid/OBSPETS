@@ -17,6 +17,8 @@ return {
 		walk = { row = 4, frames = 8, fps = 10 },
 		run = { row = 5, frames = 8, fps = 13 },
 		sleep = { row = 6, frames = 1, fps = 1 },
+		stretch = { row = 7, frames = 13, fps = 9 },
+		-- no swat, beg, scared or angry frames: the reactions that need them stay off unless one stands in
 	},
 	-- jumps: crouched low in the stretch, then frames from the run
 	poses = {

@@ -8,6 +8,11 @@
 
 #include <winsock2.h>
 
+#include <util/platform.h>
+
+#include <algorithm>
+#include <cstdio>
+
 namespace obspet {
 
 // who's asking, for the servers' logs (PLUGIN_VERSION is only known at run time)
@@ -101,6 +106,105 @@ HttpResult http(const std::string &method, const std::string &url, const std::ve
 		curl_easy_getinfo(c, CURLINFO_RESPONSE_CODE, &r.status);
 	else
 		r.error = curl_easy_strerror(rc);
+	curl_slist_free_all(hs);
+	curl_easy_cleanup(c);
+	return r;
+}
+
+namespace {
+struct Download {
+	FILE *f = nullptr;
+	const std::function<bool(int64_t, int64_t)> *progress = nullptr;
+	std::string error_body;   // what a refusing server said (kept small), instead of the file
+	long status = 0;
+	CURL *c = nullptr;
+	bool cancelled = false;
+};
+
+size_t download_write(char *p, size_t size, size_t n, void *ud)
+{
+	auto *d = static_cast<Download *>(ud);
+	if (!d->status)
+		curl_easy_getinfo(d->c, CURLINFO_RESPONSE_CODE, &d->status);
+	if (d->status < 200 || d->status >= 300) {
+		if (d->error_body.size() < 4096)
+			d->error_body.append(p, std::min<size_t>(size * n, 4096 - d->error_body.size()));
+		return size * n;
+	}
+	return fwrite(p, size, n, d->f) == n ? size * n : 0;
+}
+
+int download_progress(void *ud, curl_off_t total, curl_off_t now, curl_off_t, curl_off_t)
+{
+	auto *d = static_cast<Download *>(ud);
+	if (g_abort)
+		return 1;
+	if (d->progress && *d->progress && !(*d->progress)((int64_t)now, (int64_t)total)) {
+		d->cancelled = true;
+		return 1;
+	}
+	return 0;
+}
+} // namespace
+
+HttpResult http_download(const std::string &url, const std::vector<std::string> &headers, const std::string &path,
+			 const std::function<bool(int64_t, int64_t)> &progress, long timeout_s)
+{
+	HttpResult r;
+	if (g_abort) {
+		r.error = "closing";
+		return r;
+	}
+	Download d;
+	d.progress = &progress;
+	d.f = os_fopen(path.c_str(), "wb");
+	if (!d.f) {
+		r.error = "can't write " + path;
+		return r;
+	}
+	CURL *c = curl_easy_init();
+	if (!c) {
+		fclose(d.f);
+		os_unlink(path.c_str());
+		r.error = "curl_easy_init failed";
+		return r;
+	}
+	d.c = c;
+	curl_slist *hs = nullptr;
+	for (auto &h : headers)
+		hs = curl_slist_append(hs, h.c_str());
+	curl_easy_setopt(c, CURLOPT_URL, url.c_str());
+	curl_easy_setopt(c, CURLOPT_PROTOCOLS_STR, "http,https");
+	curl_easy_setopt(c, CURLOPT_HTTPHEADER, hs);
+	curl_easy_setopt(c, CURLOPT_USERAGENT, user_agent());
+	curl_easy_setopt(c, CURLOPT_TIMEOUT, timeout_s);
+	curl_easy_setopt(c, CURLOPT_CONNECTTIMEOUT, 10L);
+	// give up on a stalled connection: under 1 KB/s for 30 s
+	curl_easy_setopt(c, CURLOPT_LOW_SPEED_LIMIT, 1024L);
+	curl_easy_setopt(c, CURLOPT_LOW_SPEED_TIME, 30L);
+	curl_easy_setopt(c, CURLOPT_NOSIGNAL, 1L);
+	curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, download_write);
+	curl_easy_setopt(c, CURLOPT_WRITEDATA, &d);
+	curl_easy_setopt(c, CURLOPT_NOPROGRESS, 0L);
+	curl_easy_setopt(c, CURLOPT_XFERINFOFUNCTION, download_progress);
+	curl_easy_setopt(c, CURLOPT_XFERINFODATA, &d);
+	CURLcode rc = curl_easy_perform(c);
+	curl_easy_getinfo(c, CURLINFO_RESPONSE_CODE, &r.status);
+	bool good = rc == CURLE_OK && r.ok();
+	if (fclose(d.f) != 0)
+		good = false;
+	if (!good) {
+		os_unlink(path.c_str());
+		if (d.cancelled)
+			r.error = "cancelled";
+		else if (rc != CURLE_OK)
+			r.error = curl_easy_strerror(rc);
+		else if (r.ok())
+			r.error = "couldn't save the file";
+		r.body = d.error_body;
+		if (r.ok())
+			r.status = 0;
+	}
 	curl_slist_free_all(hs);
 	curl_easy_cleanup(c);
 	return r;

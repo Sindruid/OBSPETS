@@ -17,11 +17,51 @@ extern "C" {
 
 namespace obspet {
 
-const char *const ANIMS[9] = {"idle", "look", "clean", "clean2", "walk", "run", "sleep", "paw", "scared"};
-const char *const POSES[4] = {"crouch", "rise", "fall", "land"};
+const char *const ANIMS[NANIMS] = {"idle", "look", "clean", "clean2", "walk", "run", "sleep", "paw",
+				   "stretch", "call", "beg", "scared", "angry"};
+// what a missing animation shows instead (the engine still needs something to draw)
 static const std::map<std::string, std::string> ANIM_FALLBACK = {
-	{"look", "idle"}, {"clean", "idle"}, {"clean2", "clean"}, {"walk", "idle"},
-	{"run", "walk"},  {"sleep", "idle"}, {"paw", "idle"},     {"scared", "look"}};
+	{"look", "idle"},  {"clean", "idle"},   {"clean2", "clean"}, {"walk", "idle"}, {"run", "walk"},
+	{"sleep", "idle"}, {"paw", "idle"},     {"stretch", "clean"}, {"call", "look"}, {"beg", "look"},
+	{"scared", "look"}, {"angry", "scared"}};
+static const std::map<std::string, const char *> ANIM_LABEL = {
+	{"idle", "Idle"},   {"look", "Look"},       {"clean", "Content"}, {"clean2", "Content 2"}, {"walk", "Walk"},
+	{"run", "Run"},     {"sleep", "Sleep"},     {"paw", "Swat"},      {"stretch", "Stretch"},  {"call", "Call"},
+	{"beg", "Beg"},     {"scared", "Scared"},   {"angry", "Angry"}};
+const ReactNeed REACT_NEEDS[] = {
+	{"curious", "look"}, {"judge", "look"},     {"play", "paw"},       {"swat_chat", "paw"}, {"yank", "paw"},
+	{"zoomies", "run"},  {"sleepy", "sleep"},   {"beg", "beg"},        {"startled", "scared"},
+	{"scared", "scared"}, {"angry", "angry"},
+};
+const int NREACT_NEEDS = sizeof(REACT_NEEDS) / sizeof(REACT_NEEDS[0]);
+
+const char *anim_label(const std::string &k)
+{
+	auto it = ANIM_LABEL.find(k);
+	return it != ANIM_LABEL.end() ? it->second : "?";
+}
+
+std::string Pack::lacks(const std::string &reaction) const
+{
+	std::string out;
+	for (int i = 0; i < NREACT_NEEDS; i++) {
+		if (reaction != REACT_NEEDS[i].reaction)
+			continue;
+		std::string all = REACT_NEEDS[i].anims;
+		size_t a = 0;
+		while (a <= all.size()) {
+			size_t b = all.find(',', a);
+			if (b == std::string::npos)
+				b = all.size();
+			std::string k = all.substr(a, b - a);
+			if (!k.empty() && !has(k))
+				out += (out.empty() ? "" : ", ") + std::string(anim_label(k));
+			a = b + 1;
+		}
+	}
+	return out;
+}
+const char *const POSES[4] = {"crouch", "rise", "fall", "land"};
 static const std::map<std::string, std::string> POSE_FALLBACK = {
 	{"crouch", "idle"}, {"rise", "crouch"}, {"fall", "rise"}, {"land", "crouch"}};
 static const std::set<std::string> VOICE = {"pet", "notice", "cheer", "question", "plead", "angry"};
@@ -485,17 +525,25 @@ std::shared_ptr<Pack> load_pack(const std::string &dir_in, std::string &err)
 	// animations, then stand-ins for the missing ones
 	l.field(T, "anims");
 	int at = lua_istable(s, -1) ? lua_gettop(s) : 0;
+	std::map<std::string, std::string> alias;   // `angry = "scared"`: another animation in its place
 	for (const char *k : ANIMS) {
 		if (!at)
 			break;
-		if (l.field(at, k) != LUA_TNIL) {
+		int ty = l.field(at, k);
+		if (ty == LUA_TSTRING) {
+			std::string to = lua_tostring(s, -1);
+			if (ANIM_FALLBACK.count(to) || to == "idle")
+				alias[k] = to;
+			else
+				warn_(std::string("animation ") + k + " = \"" + to + "\" names no animation");
+		} else if (ty != LUA_TNIL) {
 			Anim a;
 			if (read_anim(l, -1, a)) {
 				P->anims[k] = a;
 				P->own_anims.insert(k);
 			}
 			else
-				warn_(std::string("animation ") + k + " isn't { row = .., frames = .., fps = .. }");
+				warn_(std::string("animation ") + k + " isn't { row = .., frames = .., fps = .. } or another one's name");
 		}
 		lua_pop(s, 1);
 	}
@@ -503,6 +551,18 @@ std::shared_ptr<Pack> load_pack(const std::string &dir_in, std::string &err)
 	if (!P->anims.count("idle")) {
 		err = "pack.lua needs at least an `idle` animation";
 		return nullptr;
+	}
+	// stand-ins it names, then borrowed ones for the rest
+	for (auto &kv : alias) {
+		if (P->own_anims.count(kv.first))
+			continue;
+		std::string x = kv.second;
+		for (int i = 0; i < 2 * NANIMS && !P->own_anims.count(x); i++)
+			x = alias.count(x) && alias[x] != kv.first ? alias[x] : ANIM_FALLBACK.count(x) ? ANIM_FALLBACK.at(x) : "idle";
+		if (!P->own_anims.count(x))
+			x = "idle";
+		P->anims[kv.first] = P->anims[x];
+		P->stand_ins[kv.first] = kv.second;
 	}
 	for (const char *k : ANIMS) {
 		if (P->anims.count(k))

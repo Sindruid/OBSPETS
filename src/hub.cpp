@@ -10,6 +10,7 @@
 #include <chrono>
 #include <ctime>
 #include <future>
+#include <thread>
 
 namespace obspet {
 
@@ -126,19 +127,25 @@ void Hub::set_profile(PetClient *p, const MoodProfile &m)
 }
 
 // A streamer may have several Pets (one per scene, say): the one acting out chat must be one people
-// can see. Any with chat reactions on that's in the program now; else any with them on.
+// can see. Any with chat reactions on that's in the program now; else an Auto-mod-only one (it only
+// asks about spam, so nothing is spent on reactions nobody sees); else any with them on.
 PetClient *Hub::mood_pet()
 {
-	PetClient *any = nullptr;
+	PetClient *any = nullptr, *mod_only = nullptr;
 	for (auto &kv : profiles_) {
 		if (!kv.second.on)
 			continue;
+		if (kv.second.automod_only) {
+			if (!mod_only)
+				mod_only = kv.first;
+			continue;
+		}
 		if (kv.first->on_screen())
 			return kv.first;
 		if (!any)
 			any = kv.first;
 	}
-	return any;
+	return mod_only ? mod_only : any;
 }
 
 HubStatus Hub::status()
@@ -156,6 +163,11 @@ HubStatus Hub::status()
 	s.twitch_live = twitch_live_;
 	s.kick_live = kick_live_;
 	s.moods_server_on = cfg_moods_on_;
+	s.automod_on = cfg_allow_delete_;
+	s.automod = cfg_automod_;
+	s.ai_gap = cfg_gap_;
+	s.react_on = cfg_react_on_;
+	s.daily_cap = cfg_daily_cap_;
 	s.mood_note = mood_note_;
 	s.reward_title = reward_title_;
 	s.reward = rewards_["twitch"].r;
@@ -524,6 +536,36 @@ void Hub::poll_link()
 	notify();
 }
 
+// A list of short strings in a JSON object, like "automod":["bots","scams"] (obs_data skips lists
+// of plain strings). Category names only: no escapes in them.
+static bool string_list(const std::string &json, const char *key, std::vector<std::string> &out)
+{
+	size_t k = json.find("\"" + std::string(key) + "\"");
+	if (k == std::string::npos)
+		return false;
+	size_t a = json.find('[', k), colon = json.find(':', k);
+	if (a == std::string::npos || colon == std::string::npos || colon > a)
+		return false;
+	size_t b = json.find(']', a);
+	if (b == std::string::npos)
+		return false;
+	out.clear();
+	for (size_t i = a; (i = json.find('"', i + 1)) != std::string::npos && i < b;) {
+		size_t j = json.find('"', i + 1);
+		if (j == std::string::npos || j > b)
+			break;
+		out.push_back(json.substr(i + 1, j - i - 1));
+		i = j;
+	}
+	return true;
+}
+
+std::string Hub::api_token()
+{
+	std::lock_guard<std::mutex> g(m_);
+	return acct_.api_token;
+}
+
 void Hub::fetch_config()
 {
 	std::string tok;
@@ -553,6 +595,11 @@ void Hub::fetch_config()
 		cfg_moods_on_ = obs_data_get_bool(d.get(), "moods_on");
 		cfg_allow_delete_ = obs_data_get_bool(d.get(), "allow_delete");
 		cfg_gap_ = std::max(3.0, (double)obs_data_get_int(d.get(), "min_gap_s"));
+		cfg_react_on_ = obs_data_has_user_value(d.get(), "react_on") ? obs_data_get_bool(d.get(), "react_on") : cfg_moods_on_;
+		cfg_daily_cap_ = (int)obs_data_get_int(d.get(), "daily_cap");
+		std::vector<std::string> am;
+		if (string_list(r.body, "automod", am))
+			cfg_automod_ = am;
 		if (cfg_moods_on_ && mood_note_.find("turned off") != std::string::npos)
 			mood_note_.clear();
 		// a platform disconnected on the website (or swapped for another account): stop using it here
@@ -770,7 +817,83 @@ Reward Hub::look_reward(const std::string &pf, const std::string &title)
 	return Reward::Unknown;   // (tries again next time the window opens)
 }
 
-void Hub::check_reward(const std::string &title)
+// Auto mod's switch and categories are the account's (sindruid.com keeps them, for every OBS on
+// it). Shown at once; the site's answer has the last word.
+void Hub::set_automod(bool on, const std::vector<std::string> &cats)
+{
+	std::string tok;
+	{
+		std::lock_guard<std::mutex> g(m_);
+		if (!acct_.valid())
+			return;
+		tok = acct_.api_token;
+		cfg_allow_delete_ = on;
+		cfg_automod_ = cats;
+	}
+	notify();
+	post_task([this, tok, on, cats] {
+		// (obs_data can't hold a list of plain strings: the JSON by hand; the names are checked ones)
+		std::string list = "[";
+		for (size_t i = 0; i < cats.size(); i++)
+			list += (i ? ",\"" : "\"") + cats[i] + "\"";
+		list += "]";
+		std::string json = "{\"allow_delete\":" + std::string(on ? "true" : "false") + ",\"automod\":" + list + "}";
+		HttpResult r = http("POST", backend() + "/streamtools/api/pet/config",
+				    {"Content-Type: application/json", "Authorization: Bearer " + tok}, json);
+		if (r.status == 401) {
+			signed_out(UNLINKED);
+			return;
+		}
+		if (!r.ok())
+			warn("saving Auto mod: HTTP %ld %.200s", r.status, r.body.c_str());
+		{
+			std::lock_guard<std::mutex> g(m_);
+			cfg_at_ = -1e9;   // (read it back from the site on the next look)
+		}
+		fetch_config();
+		notify();
+	});
+}
+
+// React to chat, the time between reactions and the daily limit are the account's too (they decide
+// what the credit on sindruid.com is spent on). Like Auto mod: shown at once, the site has the last word.
+void Hub::set_reacting(bool on, int gap_s, int daily_cap)
+{
+	gap_s = std::clamp(gap_s, 3, 600);
+	daily_cap = std::clamp(daily_cap, 0, 20000);
+	std::string tok;
+	{
+		std::lock_guard<std::mutex> g(m_);
+		if (!acct_.valid())
+			return;
+		tok = acct_.api_token;
+		cfg_react_on_ = on;
+		cfg_moods_on_ = on;
+		cfg_gap_ = gap_s;
+		cfg_daily_cap_ = daily_cap;
+	}
+	notify();
+	post_task([this, tok, on, gap_s, daily_cap] {
+		std::string json = "{\"moods_on\":" + std::string(on ? "true" : "false") + ",\"min_gap_s\":" +
+				   std::to_string(gap_s) + ",\"daily_cap\":" + std::to_string(daily_cap) + "}";
+		HttpResult r = http("POST", backend() + "/streamtools/api/pet/config",
+				    {"Content-Type: application/json", "Authorization: Bearer " + tok}, json);
+		if (r.status == 401) {
+			signed_out(UNLINKED);
+			return;
+		}
+		if (!r.ok())
+			warn("saving the reactions to chat: HTTP %ld %.200s", r.status, r.body.c_str());
+		{
+			std::lock_guard<std::mutex> g(m_);
+			cfg_at_ = -1e9;   // (read it back from the site on the next look)
+		}
+		fetch_config();
+		notify();
+	});
+}
+
+void Hub::check_reward(const std::string &title, bool again)
 {
 	std::vector<std::string> pfs = platforms_on();
 	{
@@ -779,14 +902,18 @@ void Hub::check_reward(const std::string &title)
 			return;
 		bool known = title == reward_title_ &&
 			     std::all_of(pfs.begin(), pfs.end(), [&](const std::string &pf) { return rewards_[pf].r != Reward::Unknown; });
-		if (known || (title == reward_title_ && now_s() - reward_checked_ < 60))
+		// asked again (the Check button: say it was deleted or renamed on Twitch): a fresh look,
+		// at most every few seconds
+		if (again && title == reward_title_ && now_s() - reward_checked_ < 3)
+			return;
+		if (!again && (known || (title == reward_title_ && now_s() - reward_checked_ < 60)))
 			return;
 		reward_checked_ = now_s();
 		if (title != reward_title_)
 			rewards_.clear();
 		reward_title_ = title;
 		for (auto &pf : pfs)
-			if (rewards_[pf].r == Reward::Unknown)
+			if (again || rewards_[pf].r == Reward::Unknown)
 				rewards_[pf] = {Reward::Checking, ""};
 	}
 	post_task([this, title, pfs] {
@@ -878,9 +1005,93 @@ void Hub::ensure_reward(const std::string &title)
 	});
 }
 
-void Hub::test_chat(const std::string &user, const std::string &text)
+ChatTry Hub::try_chat(PetClient *pet, const std::string &user, const std::string &text)
 {
-	hear("", user, text, "#a6c1db", "", false);
+	ChatTry out;
+	std::string tok, login;
+	{
+		std::lock_guard<std::mutex> g(m_);
+		if (!acct_.valid()) {
+			out.error = "Sign in on the Account page first: the AI that reads chat runs on your Stream Tools account.";
+			return out;
+		}
+		auto it = profiles_.find(pet);
+		if (it != profiles_.end())
+			out.prof = it->second;
+		else if (PetClient *mp = mood_pet())
+			out.prof = profiles_[mp];
+		out.prof.allow_delete = out.prof.allow_delete && cfg_allow_delete_;   // (Auto mod: off here or on the site)
+		tok = acct_.api_token;
+		login = acct_.twitch.on() ? acct_.twitch.login : acct_.kick.login;
+	}
+	const MoodProfile &prof = out.prof;
+	Data body = data_new();
+	obs_data_array_t *arr = obs_data_array_create();
+	{
+		Data o = data_new();
+		obs_data_set_string(o.get(), "user", user.c_str());
+		obs_data_set_string(o.get(), "text", text.c_str());
+		obs_data_set_bool(o.get(), "new", true);
+		obs_data_array_push_back(arr, o.get());
+	}
+	obs_data_set_array(body.get(), "lines", arr);
+	obs_data_array_release(arr);
+	obs_data_set_string(body.get(), "name", prof.name.c_str());
+	obs_data_set_string(body.get(), "describe", prof.describe.c_str());
+	obs_data_set_string(body.get(), "pronouns", prof.pronouns.c_str());
+	obs_data_set_string(body.get(), "personality", prof.personality.c_str());
+	obs_data_set_string(body.get(), "state", prof.state.c_str());
+	if (!prof.skip.empty()) {
+		obs_data_array_t *sk = obs_data_array_create();
+		for (auto &k : prof.skip) {
+			Data o = data_new();
+			obs_data_set_string(o.get(), "kind", k.c_str());
+			obs_data_array_push_back(sk, o.get());
+		}
+		obs_data_set_array(body.get(), "skip", sk);
+		obs_data_array_release(sk);
+	}
+	obs_data_set_string(body.get(), "channel", login.c_str());
+	obs_data_set_bool(body.get(), "test", true);
+	std::string json = obs_data_get_json(body.get());
+
+	// (the settings server waits ~6 s for its requests when OBS closes: stay inside that)
+	HttpResult r;
+	Data d;
+	for (int tries = 0; tries < 2; tries++) {
+		r = http("POST", backend() + "/streamtools/api/pet/mood", {"Content-Type: application/json", "Authorization: Bearer " + tok}, json, 5);
+		d = data_json(r.body);
+		if (r.status == 429 && d && str(d.get(), "error") == "too_soon" && tries == 0) {
+			std::this_thread::sleep_for(std::chrono::milliseconds(1500));   // (chat was asked about a moment ago)
+			continue;
+		}
+		break;
+	}
+	if (r.status == 401) {
+		out.error = "This OBS isn't signed in any more. Sign in again on the Account page.";
+		return out;
+	}
+	if (!r.ok()) {
+		std::string err = d ? str(d.get(), "error") : "", msg = d ? str(d.get(), "message") : "";
+		if (!r.status)
+			out.error = "Can't reach sindruid.com right now. Check your connection and try again.";
+		else if (err == "paused" && !msg.empty())
+			out.error = "Chat reactions are paused: " + msg;
+		else if (err == "too_soon")
+			out.error = "Chat was just checked. Try again in a couple of seconds.";
+		else
+			out.error = msg.empty() ? "The AI didn't answer. Try again." : msg;
+		return out;
+	}
+	out.kind = d ? str(d.get(), "kind") : "";
+	if (out.kind.empty())
+		out.kind = "none";
+	out.why = d ? str(d.get(), "why") : "";
+	out.del = d && obs_data_get_bool(d.get(), "delete") && prof.allow_delete;
+	if (out.del)
+		out.kind = "yank";
+	info("chat tester: %s%s", out.kind.c_str(), out.del ? " (Auto mod would delete it)" : "");
+	return out;
 }
 
 // ------------------------------------------------------------------ badges for OBSPETS Chat
@@ -1035,6 +1246,8 @@ void Hub::mood_tick()
 	std::string tok, login, personality;
 	Data body = data_new();
 	std::vector<Line> batch;
+	std::vector<std::string> only;   // the reactions worth asking about now (empty: every one)
+	bool nothing = false;            // none: don't ask at all
 	{
 		std::lock_guard<std::mutex> g(m_);
 		PetClient *mp = mood_pet();
@@ -1043,11 +1256,33 @@ void Hub::mood_tick()
 		prof = profiles_[mp];
 		if (!prof.on)
 			return;
+		if (prof.automod_only && !(prof.allow_delete && cfg_allow_delete_ && !cfg_automod_.empty()))
+			return;   // (only Auto mod would use it, and it can't delete anything)
 		bool any = std::any_of(lines_.begin(), lines_.end(), [](const Line &l) { return l.is_new; });
 		double t = now_s();
 		if (!any || t < last_ask_ + cfg_gap_ || t < paused_until_)
 			return;
 		last_ask_ = t;
+		// Only ask about what could still happen, so the model reads a shorter menu (and nothing is
+		// asked when nothing could): off screen, only Auto mod's deletes matter; within the gap after
+		// a reaction, only angry and yank get through (see the hold-back below).
+		bool can_delete = prof.allow_delete && cfg_allow_delete_;
+		bool angry_ok = std::find(prof.skip.begin(), prof.skip.end(), "angry") == prof.skip.end();
+		if (!prof.automod_only && !mp->on_screen()) {
+			if (can_delete)
+				only = {"yank"};
+			else
+				nothing = true;
+		} else if (!prof.automod_only && !last_kind_.empty() && t - last_react_at_ < prof.gap) {
+			only = {"yank"};
+			if (angry_ok)
+				only.push_back("angry");
+		}
+		if (nothing) {   // (what's new now is context for the next question)
+			for (auto &l : lines_)
+				l.is_new = false;
+			return;
+		}
 		tok = acct_.api_token;
 		login = acct_.twitch.on() ? acct_.twitch.login : acct_.kick.login;
 		personality = prof.personality;   // the character's own (set in the character editor)
@@ -1085,6 +1320,16 @@ void Hub::mood_tick()
 		}
 		obs_data_set_array(body.get(), "skip", sk);
 		obs_data_array_release(sk);
+	}
+	if (!only.empty()) {
+		obs_data_array_t *on = obs_data_array_create();
+		for (auto &k : only) {
+			Data o = data_new();
+			obs_data_set_string(o.get(), "kind", k.c_str());
+			obs_data_array_push_back(on, o.get());
+		}
+		obs_data_set_array(body.get(), "only", on);
+		obs_data_array_release(on);
 	}
 	obs_data_set_string(body.get(), "channel", login.c_str());
 
@@ -1147,6 +1392,10 @@ void Hub::mood_tick()
 		info("mood: none%s%s", why.empty() ? "" : ": ", why.c_str());
 		return;
 	}
+	if (prof.automod_only && !remove) {
+		info("mood: %s (Auto mod only: nothing to act out)", kind.c_str());
+		return;
+	}
 	{
 		std::lock_guard<std::mutex> g(m_);
 		// deleted while the model thought about it (a mod was quicker): never put it back on screen
@@ -1168,9 +1417,15 @@ void Hub::mood_tick()
 	if (remove) {
 		// Auto mod deletes it now, not when the pet gets there: nobody else in chat should read it
 		// any longer than it takes to catch. An OBSPETS Chat keeps the line, crossed out, for the
-		// pet to rip out (told first, so it never drops it on the platform's delete event).
-		ChatSource::strike_all(viewer->id);
+		// pet to rip out (told first, so it never drops it on the platform's delete event). With no
+		// pet to come for it (or set not to show it), the chat just drops it on that delete event.
+		if (prof.show_deletes)
+			ChatSource::strike_all(viewer->id);
 		delete_message(viewer->id);
+		if (!prof.show_deletes)
+			return;
+	} else if (prof.automod_only) {
+		return;
 	}
 	HubEvent e;
 	e.t = HubEvent::T::Mood;

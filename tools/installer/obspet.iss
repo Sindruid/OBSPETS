@@ -7,6 +7,12 @@
 ; done. It shows up in Windows' "Installed apps" as OBSPETS, which uninstalls it. The user's own
 ; characters, settings and sign-in live in %APPDATA%\obs-studio\plugin_config\obspet and stay.
 ;
+; Update mode, started by the plugin's Update card (src/updater.cpp) with /VERYSILENT and
+; /OBSPETUPDATE=<update.txt>: Windows asks for permission, Setup writes the "ready" file named in
+; update.txt (OBS then closes itself), waits up to 2 minutes for that OBS to be gone (or for the "cancel"
+; file), installs, and opens that same OBS again with its own command line, as the user who
+; started it (not elevated).
+;
 ; For testing without touching a real OBS: /DTest=1 installs for the current user only into
 ; /DTestDir=<folder>, /DObsProcess=<name.exe> changes which program counts as "OBS is open",
 ; /DTestObs=<path to obs64.exe> is the OBS it looks for and opens, /DObsParams=--multi, and
@@ -118,6 +124,66 @@ Filename: "{code:ObsExe}"; Parameters: "{#ObsParams}"; WorkingDir: "{code:ObsDir
 [Code]
 var
   ObsPath: String;
+  { update mode (see the top) }
+  UpdateMode, ObsClosed, Reopened: Boolean;
+  UpdPid, UpdExe, UpdDir, UpdArgs, UpdReady, UpdCancel, UpdVersion: String;
+
+{ update.txt, written by the plugin (UTF-8):
+    OBSPETS-UPDATE-1 / OBS's process id / obs64.exe / its folder / its arguments / the ready file /
+    the cancel file / the version it updates to }
+function ReadUpdateTask(Path: String): Boolean;
+var
+  Lines: TArrayOfString;
+begin
+  Result := False;
+  if not LoadStringsFromFile(Path, Lines) then
+  begin
+    Log('update: can''t read ' + Path);
+    Exit;
+  end;
+  if (GetArrayLength(Lines) < 8) or (Lines[0] <> 'OBSPETS-UPDATE-1') then
+  begin
+    Log('update: ' + Path + ' isn''t an update task');
+    Exit;
+  end;
+  UpdPid := Trim(Lines[1]);
+  UpdExe := Lines[2];
+  UpdDir := Lines[3];
+  UpdArgs := Lines[4];
+  UpdReady := Lines[5];
+  UpdCancel := Lines[6];
+  UpdVersion := Lines[7];
+  Result := (StrToIntDef(UpdPid, 0) > 0) and FileExists(UpdExe);
+  Log('update: to ' + UpdVersion + ', for OBS ' + UpdPid + ' (' + UpdExe + ' ' + UpdArgs + ')');
+end;
+
+function PidRunning(Pid: String): Boolean;
+var
+  Wmi, Svc, Found: Variant;
+begin
+  Result := False;
+  try
+    Wmi := CreateOleObject('WbemScripting.SWbemLocator');
+    Svc := Wmi.ConnectServer('.', 'root\CIMV2');
+    Found := Svc.ExecQuery('SELECT ProcessId FROM Win32_Process WHERE ProcessId = ' + IntToStr(StrToIntDef(Pid, 0)));
+    Result := Found.Count > 0;
+  except
+    Result := False;
+  end;
+end;
+
+{ Opens OBS again the way it was started, as the user who started Setup (OBS shouldn't run elevated). }
+procedure ReopenObs();
+var
+  Rc: Integer;
+begin
+  if Reopened or not UpdateMode or not ObsClosed then Exit;
+  Reopened := True;
+  if not ExecAsOriginalUser(UpdExe, UpdArgs, UpdDir, SW_SHOWNORMAL, ewNoWait, Rc) then
+    Log('update: couldn''t open OBS again (' + SysErrorMessage(Rc) + ')')
+  else
+    Log('update: opened OBS again');
+end;
 
 function FindObs(): String;
 var
@@ -186,6 +252,18 @@ var
   Major: Integer;
 begin
   Result := True;
+  if ExpandConstant('{param:OBSPETUPDATE|}') <> '' then
+  begin
+    { The plugin started this to update itself: only with its task, and only silently }
+    Result := WizardSilent() and ReadUpdateTask(ExpandConstant('{param:OBSPETUPDATE|}'));
+    if not Result then Exit;
+    UpdateMode := True;
+    ObsPath := UpdExe;
+    { Windows gave permission (this runs elevated): now OBS may close }
+    if not SaveStringToFile(UpdReady, 'ok', False) then
+      Log('update: couldn''t write ' + UpdReady);
+    Exit;
+  end;
   ObsPath := FindObs();
   if ObsPath = '' then
   begin
@@ -209,15 +287,57 @@ end;
 function NextButtonClick(CurPageID: Integer): Boolean;
 begin
   Result := True;
-  if CurPageID = wpWelcome then
+  { (also called when silent; an update waits for OBS in PrepareToInstall instead) }
+  if (CurPageID = wpWelcome) and not UpdateMode then
     Result := WaitForObsClosed();
 end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  I: Integer;
 begin
   Result := '';
+  if UpdateMode then
+  begin
+    { OBS closes itself once it sees the ready file: wait for it (and for every other OBS) }
+    for I := 1 to 480 do
+    begin
+      if FileExists(UpdCancel) then
+      begin
+        Result := 'The update was called off in OBS.';
+        Log('update: ' + Result);
+        Exit;
+      end;
+      if not PidRunning(UpdPid) and not ObsRunning() then
+      begin
+        ObsClosed := True;
+        Log('update: OBS is closed');
+        Exit;
+      end;
+      Sleep(250);
+    end;
+    Result := 'OBS didn''t close.';
+    Log('update: ' + Result);
+    Exit;
+  end;
   if WizardSilent() and ObsRunning() then
     Result := 'OBS is open. Close OBS, then run Setup again.';
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssDone then
+    ReopenObs();
+end;
+
+{ Also when the install failed after OBS closed: the OBS that was open comes back either way }
+procedure DeinitializeSetup();
+begin
+  try
+    ReopenObs();
+  except
+    Log('update: ' + GetExceptionMessage());
+  end;
 end;
 
 { The ready page is skipped, so the first page starts the install: call its button Install. }

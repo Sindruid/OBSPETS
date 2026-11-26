@@ -7,6 +7,8 @@ static void close_sock(sock_t s) { closesocket(s); }
 
 #include "chat-server.hpp"
 #include "editor.hpp"
+#include "settings.hpp"
+#include "updater.hpp"
 #include "util.hpp"
 
 #include <util/platform.h>
@@ -36,8 +38,9 @@ bool started = false, ok = false;
 const size_t MAX_HEAD = 32 * 1024;
 const size_t MAX_BODY = 24 * 1024 * 1024;        // a character's sprite sheet or a sound from the editor
 const size_t MAX_CHAT_BODY = 8 * 1024 * 1024;    // a chat page's report (a yanked line's picture at most)
+const size_t MAX_SETTINGS_BODY = 1 * 1024 * 1024;
 
-// The pages' files: only these, from the plugin's data/chat/ and data/editor/.
+// The pages' files: only these, from the plugin's data/chat/, data/editor/ and data/settings/.
 struct File {
 	const char *dir, *name, *type;
 } FILES[] = {
@@ -47,6 +50,10 @@ struct File {
 	{"editor", "index.html", "text/html; charset=utf-8"},
 	{"editor", "editor.js", "text/javascript; charset=utf-8"},
 	{"editor", "editor.css", "text/css; charset=utf-8"},
+	{"settings", "index.html", "text/html; charset=utf-8"},
+	{"settings", "settings.js", "text/javascript; charset=utf-8"},
+	{"settings", "settings.css", "text/css; charset=utf-8"},
+	{"update", "update.js", "text/javascript; charset=utf-8"},
 };
 
 std::string url_decode(const std::string &s)
@@ -168,11 +175,26 @@ HttpResp route(const HttpReq &r)
 		out.location = "/editor/?k=" + the_key;
 		return out;
 	}
+	// (?s=automod: opens on that page, for a pet; letters only)
+	if (r.method == "GET" && r.path == "/settings/open") {
+		std::string sec = r.q("s");
+		bool ok = !sec.empty() && sec.size() < 20 &&
+			  std::all_of(sec.begin(), sec.end(), [](char c) { return c >= 'a' && c <= 'z'; });
+		out.status = 302;
+		out.type = "text/plain; charset=utf-8";
+		out.location = "/settings/?k=" + the_key + (ok ? "&s=" + sec : "");
+		return out;
+	}
 	// (serve() checked the key of these before it read a body)
+	// The Update card on the settings page and in the editor (updater.cpp)
+	if (r.path == "/settings/api/self-update" || r.path == "/editor/api/self-update")
+		return updater_api(r, r.path[1] == 's' ? "settings" : "editor");
 	if (r.path.rfind("/chat/api/", 0) == 0)
 		return chat_api(r);
 	if (r.path.rfind("/editor/api/", 0) == 0)
 		return editor_api(r);
+	if (r.path.rfind("/settings/api/", 0) == 0)
+		return settings_api(r);
 	size_t sl = r.path.find('/', 1);
 	if (r.method == "GET" && sl != std::string::npos) {
 		std::string dir = r.path.substr(1, sl - 1), name = r.path.substr(sl + 1);
@@ -257,8 +279,9 @@ void serve(sock_t s)
 		respond(s, HttpResp{403, "text/plain; charset=utf-8", "Open this from 127.0.0.1."});
 		return;
 	}
-	bool chat = r.path.rfind("/chat/api/", 0) == 0, editor = r.path.rfind("/editor/api/", 0) == 0;
-	if ((chat || editor) && !key_ok(r.q("k"))) {
+	bool chat = r.path.rfind("/chat/api/", 0) == 0, editor = r.path.rfind("/editor/api/", 0) == 0,
+	     settings = r.path.rfind("/settings/api/", 0) == 0;
+	if ((chat || editor || settings) && !key_ok(r.q("k"))) {
 		respond(s, HttpResp{403, "application/json; charset=utf-8", "{\"error\":\"key\"}"});
 		return;
 	}
@@ -266,7 +289,7 @@ void serve(sock_t s)
 		respond(s, HttpResp{405, "text/plain", "method"});
 		return;
 	}
-	if (len > (editor ? MAX_BODY : chat ? MAX_CHAT_BODY : 0)) {
+	if (len > (editor ? MAX_BODY : chat ? MAX_CHAT_BODY : settings ? MAX_SETTINGS_BODY : 0)) {
 		respond(s, HttpResp{413, "text/plain", "too big"});
 		return;
 	}
@@ -322,30 +345,57 @@ bool start()
 		warn("chat server: no sockets");
 		return false;
 	}
-	std::random_device rd;   // (the OS's CSPRNG on MSVC)
-	char hex[65];
-	for (int i = 0; i < 32; i++)
-		snprintf(hex + i * 2, 3, "%02x", (unsigned)(rd() & 0xFF));
-	the_key = hex;
-
-	listener = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-	if (listener == BAD_SOCK) {
-		warn("chat server: no socket");
-		return false;
+	// Restarted by an update (updater.cpp): the same port and key as before, so the settings page
+	// and the editor that were open find OBS again by themselves. Else a new key, on any free port.
+	int want_port = 0;
+	std::string want_key;
+	bool resumed = updater_take_handoff(want_port, want_key) && want_key.size() == 64;
+	if (resumed) {
+		the_key = want_key;
+	} else {
+		std::random_device rd;   // (the OS's CSPRNG on MSVC)
+		char hex[65];
+		for (int i = 0; i < 32; i++)
+			snprintf(hex + i * 2, 3, "%02x", (unsigned)(rd() & 0xFF));
+		the_key = hex;
 	}
+
+	auto listen_on = [](int port) {
+		sock_t l = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+		if (l == BAD_SOCK)
+			return BAD_SOCK;
+		sockaddr_in a{};
+		a.sin_family = AF_INET;
+		a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);   // this PC only
+		a.sin_port = htons((u_short)port);            // 0: any free port
+		if (bind(l, (sockaddr *)&a, sizeof a) != 0 || listen(l, 16) != 0) {
+			close_sock(l);
+			return BAD_SOCK;
+		}
+		return l;
+	};
+	listener = BAD_SOCK;
+	if (resumed && want_port >= 1024 && want_port <= 65535)
+		for (int i = 0; i < 10 && listener == BAD_SOCK; i++) {   // (the old OBS may only just have let go)
+			if (i)
+				std::this_thread::sleep_for(std::chrono::milliseconds(100));
+			listener = listen_on(want_port);
+		}
+	bool same_port = listener != BAD_SOCK;
+	if (!same_port)
+		listener = listen_on(0);
 	sockaddr_in a{};
-	a.sin_family = AF_INET;
-	a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);   // this PC only
-	a.sin_port = 0;                               // any free port
 	socklen_t al = sizeof a;
-	if (bind(listener, (sockaddr *)&a, sizeof a) != 0 || listen(listener, 16) != 0 ||
-	    getsockname(listener, (sockaddr *)&a, &al) != 0) {
+	if (listener == BAD_SOCK || getsockname(listener, (sockaddr *)&a, &al) != 0) {
 		warn("chat server: couldn't listen on 127.0.0.1");
-		close_sock(listener);
+		if (listener != BAD_SOCK)
+			close_sock(listener);
 		listener = BAD_SOCK;
 		return false;
 	}
 	the_port = ntohs(a.sin_port);
+	if (resumed)
+		updater_resumed(same_port);
 	stopping = false;
 	acceptor = std::thread(accept_loop);
 	ok = true;
@@ -371,6 +421,7 @@ void stop()
 	WSACleanup();
 }
 
+bool is_stopping() { return stopping.load(); }
 int port() { return the_port; }
 const std::string &key() { return the_key; }
 std::string base_url() { return "http://127.0.0.1:" + std::to_string(the_port); }

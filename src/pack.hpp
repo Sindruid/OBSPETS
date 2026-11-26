@@ -67,16 +67,30 @@ struct Pack {
 	int nsounds = 0;
 	std::string sound_set = "default";   // the built-in sounds for roles it doesn't set ("none": silence)
 	std::set<std::string> own_anims, own_poses;   // the ones pack.lua gives (the rest are stand-ins)
+	std::map<std::string, std::string> stand_ins;   // anims pack.lua fills with another one (`angry = "scared"`)
 	std::string borrowed;                 // "look->idle, ..."
 	std::vector<std::string> warnings;
 
 	const Anim &anim(const std::string &k) const;
 	const Rgb &color(const std::string &k) const;
 	const Glyph &glyph(const std::string &k) const;
+	// it has this animation: drawn for it, or another one named in its place
+	bool has(const std::string &k) const { return own_anims.count(k) || stand_ins.count(k); }
+	// the animations a reaction needs that it doesn't have ("" when it can do it)
+	std::string lacks(const std::string &reaction) const;
 };
 using PackPtr = std::shared_ptr<const Pack>;
 
-extern const char *const ANIMS[9];
+constexpr int NANIMS = 13;
+extern const char *const ANIMS[NANIMS];
+// What each reaction needs to make sense on screen. A reaction whose animation a pack doesn't have
+// (or name a stand-in for) is off for that pack: it would look wrong with a borrowed one.
+struct ReactNeed {
+	const char *reaction, *anims;   // anims: comma-separated
+};
+extern const ReactNeed REACT_NEEDS[];
+extern const int NREACT_NEEDS;
+const char *anim_label(const std::string &k);   // "Angry", as the editor shows it
 extern const char *const POSES[4];
 bool is_voice(const std::string &role);
 bool is_sound_role(const std::string &role);

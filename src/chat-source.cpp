@@ -1,7 +1,10 @@
 // OBSPETS Chat (see chat-source.hpp).
 #include "chat-source.hpp"
 #include "chat-server.hpp"
+#include "editor.hpp"
 #include "hub.hpp"
+#include "pet.hpp"
+#include "settings.hpp"
 
 #include <callback/calldata.h>
 #include <callback/proc.h>
@@ -361,29 +364,41 @@ void ChatSource::update(obs_data_t *s)
 	send("obspet_config", d.get());
 }
 
+std::string ChatSource::status_text()
+{
+	std::lock_guard<std::mutex> g(sh_->mu);
+	return sh_->status;
+}
+
 // Signing in (or out) later changes "your own channel" and the badges: look now and then.
 void ChatSource::tick(float seconds)
 {
-	// A new status from the page: show it in the properties, but not while someone is typing in
-	// them (rebuilding them would take the cursor out of the box). OBS sends an edit 0.5 s after the
-	// last key, so 3 s without one means the typing has stopped.
 	bool refresh = false;
 	{
 		std::lock_guard<std::mutex> g(sh_->mu);
-		if (sh_->refresh_due && os_gettime_ns() - sh_->last_edit_ns >= 3000000000ULL) {
+		if (sh_->refresh_due) {
 			sh_->refresh_due = false;
 			refresh = true;
 		}
 	}
-	if (refresh)
-		refresh_properties();
 
 	since_check_ += seconds;
-	if (since_check_ < 2)
-		return;
-	since_check_ = 0;
-	Data s(obs_source_get_settings(self_));
-	update(s.get());
+	if (since_check_ >= 1.0f) {
+		since_check_ = 0;
+		HubStatus st = Hub::get().status();
+		std::string sig = (st.signed_in ? "1" : "0") + std::string("|") + (st.linking ? "1" : "0") + "|" +
+				  st.code + "|" + st.login + "|" + st.kick_login + "|" + (st.twitch_live ? "1" : "0") + "|" +
+				  (st.kick_live ? "1" : "0") + "|" + st.twitch_missing + "|" + st.kick_missing + "|" +
+				  st.message + "|" + st.mood_note;
+		if (!last_hub_sig_.empty() && sig != last_hub_sig_)
+			refresh = true;
+		last_hub_sig_ = std::move(sig);
+		Data s(obs_source_get_settings(self_));
+		update(s.get());
+	}
+
+	if (refresh)
+		refresh_properties();
 }
 
 void ChatSource::render()
@@ -502,154 +517,36 @@ std::string ChatSource::add_test_line(const std::string &user, const std::string
 	return id;
 }
 
-// ------------------------------------------------------------------ properties
-
-static obs_properties_t *group(obs_properties_t *p, const char *id, const char *title)
-{
-	obs_properties_t *g = obs_properties_create();
-	obs_properties_add_group(p, id, title, OBS_GROUP_NORMAL, g);
-	return g;
-}
-
-static void tip(obs_property_t *p, const char *text) { obs_property_set_long_description(p, text); }
+// ------------------------------------------------------------------ properties (minimal)
 
 void ChatSource::refresh_properties() { refresh_props_of(id_); }
 
 obs_properties_t *ChatSource::properties()
 {
 	obs_properties_t *p = obs_properties_create();
-	Data s(obs_source_get_settings(self_));
-	HubStatus st = Hub::get().status();
-	std::string status;
-	{
-		std::lock_guard<std::mutex> g(sh_->mu);
-		status = sh_->status;
-	}
-
-	std::string head =
-		"Your Twitch and Kick chat on screen, made for OBSPETS: the pet sits on the newest message, gets bumped up by new "
-		"ones, and rips a real message right out of the chat. (Pick this source as the pet's chat, or leave the "
-		"pet on \"Find it by itself\".)";
+	std::string status = status_text();
+	std::string prefix;
 	if (!browser_)
-		head += "\n\nThis needs OBS's Browser source, which isn't installed in this OBS.";
+		prefix = "OBSPETS Chat needs OBS's Browser source (obs-browser), which isn't installed in this OBS.";
 	else if (!status.empty())
-		head += "\n\n" + status;
-	obs_properties_add_text(p, "about", head.c_str(), OBS_TEXT_INFO);
+		prefix = "Chat overlay: " + status;
 
-	obs_property_t *ch = obs_properties_add_text(p, "channel", "Twitch channel", OBS_TEXT_DEFAULT);
-	tip(ch, !st.login.empty() ? ("Empty: your own channel (" + st.login + ").").c_str()
-				  : "A Twitch channel's name. (Empty: yours, once you sign in with Twitch on an OBSPETS source.)");
-	ch = obs_properties_add_text(p, "kick", "Kick channel", OBS_TEXT_DEFAULT);
-	tip(ch, !st.kick_login.empty() ? ("Empty: your own channel (" + st.kick_login + ").").c_str()
-				       : "A Kick channel's name. (Empty: yours, once you sign in with Kick on an OBSPETS source.)");
-	obs_properties_add_int(p, "width", "Width", 100, 3840, 10);
-	obs_properties_add_int(p, "height", "Height", 100, 2160, 10);
-	tip(obs_properties_add_bool(p, "test", "Show test messages"),
-	    "Fake messages for styling it. Turn off when live.");
+	add_account_properties(p, "", prefix);
 
-	// ---- messages
-	obs_properties_t *g = group(p, "g_msgs", "Messages");
-	obs_property_t *l = obs_properties_add_list(g, "order", "Newest message", OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
-	obs_property_list_add_string(l, "At the bottom (messages move up)", "up");
-	obs_property_list_add_string(l, "At the top (messages move down)", "down");
-	tip(l, "With the newest at the top, the pet sits on the chat's top edge and isn't bumped by new messages.");
-	l = obs_properties_add_list(g, "align", "Line up", OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
-	obs_property_list_add_string(l, "Left", "left");
-	obs_property_list_add_string(l, "Right", "right");
-	l = obs_properties_add_list(g, "anim", "New messages", OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
-	obs_property_list_add_string(l, "Slide in", "slide");
-	obs_property_list_add_string(l, "Fade in", "fade");
-	obs_property_list_add_string(l, "Pop in", "pop");
-	obs_property_list_add_string(l, "Just appear", "none");
-	obs_properties_add_int_slider(g, "max", "Messages kept on screen, at most", 1, 100, 1);
-	obs_property_t *fd = obs_properties_add_int(g, "fade", "Hide each message after (0: never)", 0, 3600, 5);
-	obs_property_int_set_suffix(fd, " s");
-	tip(obs_properties_add_bool(g, "history", "Show the last messages when it loads"),
-	    "From recent-messages.robotty.de, a free service most chat overlays use, so the chat isn't empty after "
-	    "you start OBS or change a setting.");
+	obs_property_t *open_set = obs_properties_add_button(p, "open_settings", "Open settings", [](obs_properties_t *, obs_property_t *, void *d) {
+		auto *chat = static_cast<ChatSource *>(d);
+		const char *name = obs_source_get_name(chat->self_);
+		open_settings("chat", name ? name : "");
+		return false;
+	});
+	obs_property_set_long_description(open_set, "Opens OBSPETS Chat Settings in your browser, with a live preview. Changes save automatically.");
 
-	// ---- text
-	g = group(p, "g_text", "Text");
-	obs_properties_add_font(g, "font", "Font");
-	obs_properties_add_color(g, "text_color", "Text color");
-	obs_property_t *ol = obs_properties_add_int_slider(g, "outline", "Outline (0: none)", 0, 10, 1);
-	obs_property_int_set_suffix(ol, " px");
-	obs_properties_add_color(g, "outline_color", "Outline color");
-	obs_properties_add_bool(g, "shadow", "Soft shadow");
+	obs_property_t *ed = obs_properties_add_button(p, "open_editor", "Open pet editor", [](obs_properties_t *, obs_property_t *, void *) {
+		open_editor("");
+		return false;
+	});
+	obs_property_set_long_description(ed, "Opens the pet editor in your browser to customize or create characters.");
 
-	// ---- names
-	g = group(p, "g_names", "Names");
-	l = obs_properties_add_list(g, "name_colors", "Name colors", OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
-	obs_property_list_add_string(l, "Each chatter's Twitch color", "twitch");
-	obs_property_list_add_string(l, "One color for everyone", "one");
-	obs_properties_add_color(g, "name_color", "Name color (one color, or for chatters who never picked one)");
-	tip(obs_properties_add_bool(g, "readable", "Keep Twitch colors readable"),
-	    "Lightens dark name colors on light text, and darkens light ones on dark text, so every name stands out.");
-	tip(obs_properties_add_bool(g, "badges", "Badges (broadcaster, mod, VIP, sub, ...)"),
-	    "Badge pictures come from Twitch with your sign-in. Without signing in, the chat marks the broadcaster, "
-	    "mods and VIPs with a colored bar instead.");
-	tip(obs_properties_add_bool(g, "pronouns", "Pronouns next to names"),
-	    "From pronouns.alejo.io, for chatters who set theirs there.");
-	obs_properties_add_bool(g, "colon", "A colon after the name");
-	obs_properties_add_bool(g, "name_line", "Name on its own line, above the message");
-
-	// ---- background
-	g = group(p, "g_bg", "Background");
-	l = obs_properties_add_list(g, "bg", "Background", OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
-	obs_property_list_add_string(l, "None (just the text)", "none");
-	obs_property_list_add_string(l, "A box behind each message", "box");
-	obs_property_list_add_string(l, "One panel behind all of them", "panel");
-	obs_properties_add_color_alpha(g, "bg_color", "Background color");
-	obs_property_t *ra = obs_properties_add_int_slider(g, "radius", "Rounded corners", 0, 40, 1);
-	obs_property_int_set_suffix(ra, " px");
-	obs_property_t *pa = obs_properties_add_int_slider(g, "padding", "Space inside the box", 0, 40, 1);
-	obs_property_int_set_suffix(pa, " px");
-	obs_property_t *ga = obs_properties_add_int_slider(g, "gap", "Space between messages", 0, 40, 1);
-	obs_property_int_set_suffix(ga, " px");
-
-	// ---- emotes
-	g = group(p, "g_emotes", "Emotes");
-	obs_properties_add_bool(g, "emotes_7tv", "7TV emotes");
-	obs_properties_add_bool(g, "emotes_bttv", "BetterTTV emotes");
-	obs_properties_add_bool(g, "emotes_ffz", "FrankerFaceZ emotes");
-	obs_property_t *es = obs_properties_add_int_slider(g, "emote_scale", "Emote size", 50, 300, 10);
-	obs_property_int_set_suffix(es, " %");
-	obs_properties_add_bool(g, "big_emotes", "Bigger emotes in a message that's only emotes");
-
-	// ---- highlights
-	g = group(p, "g_marks", "Highlights");
-	obs_properties_add_bool(g, "roles", "Mark the broadcaster, mods and VIPs");
-	obs_properties_add_color(g, "role_color", "Their mark's color");
-	tip(obs_properties_add_bool(g, "mentions", "Highlight messages that mention you"),
-	    "Messages with @yourname, or your name, in them.");
-	obs_properties_add_color(g, "mention_color", "Mention color");
-	obs_properties_add_bool(g, "highlights", "Highlight \"Highlight my message\" channel-point messages");
-	obs_properties_add_bool(g, "first", "Mark first-time chatters");
-	obs_properties_add_bool(g, "replies", "Show who a reply is to");
-	obs_properties_add_bool(g, "me_color", "/me messages in the chatter's color");
-
-	// ---- what it hides
-	g = group(p, "g_filter", "What it hides");
-	tip(obs_properties_add_text(g, "hide_users", "Hide these chatters (bots), separated by commas", OBS_TEXT_DEFAULT),
-	    "Usernames, not display names.");
-	obs_properties_add_bool(g, "hide_commands", "Hide commands (messages starting with !)");
-	obs_properties_add_bool(g, "hide_links", "Hide messages with links");
-	tip(obs_properties_add_text(g, "words", "Words to filter, separated by commas", OBS_TEXT_DEFAULT),
-	    "Whole words, any case. Twitch's and Kick's own AutoMod and blocked terms still apply before this.");
-	l = obs_properties_add_list(g, "words_mode", "A message with one of them", OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
-	obs_property_list_add_string(l, "Isn't shown", "hide");
-	obs_property_list_add_string(l, "Is shown with the word as ***", "mask");
-
-	// ---- custom CSS
-	g = group(p, "g_css", "Custom CSS");
-	obs_property_t *css = obs_properties_add_text(g, "css", "CSS", OBS_TEXT_MULTILINE);
-	tip(css, "Applies on top of everything above. Classes: .msg (one message; also .mod .vip .host .sub .first "
-		 ".highlight .mention .action .reply .big, and .struck: deleted by Auto mod, waiting for the pet), "
-		 ".badges, .badge, .pronouns, .name, .colon, .text, .emote, .reply-to. #list holds the messages.");
-	obs_properties_add_text(g, "css_note",
-				"Custom CSS can change anything about the look. Keep messages inside #list, or the pet can't "
-				"find them.",
-				OBS_TEXT_INFO);
 	return p;
 }
 

@@ -8,6 +8,7 @@
 // data/packs/ (and ../../sources/pet/packs/ if it exists). Your packs default to .editor-dev/
 // (git-ignored). "Try it on stream" and "Show on my Pet" only log.
 import { createServer } from 'node:http';
+import { fakeUpdater } from './fake-updater.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -107,7 +108,7 @@ function parseLua(src) {
 	return exp();
 }
 
-const ANIMS = ['idle', 'look', 'clean', 'clean2', 'walk', 'run', 'sleep', 'paw', 'scared'];
+const ANIMS = ['idle', 'look', 'clean', 'clean2', 'walk', 'run', 'sleep', 'paw', 'stretch', 'call', 'beg', 'scared', 'angry'];
 const FB = { look: 'idle', clean: 'idle', clean2: 'clean', walk: 'idle', run: 'walk', sleep: 'idle', paw: 'idle', scared: 'look' };
 const POSES = ['crouch', 'rise', 'fall', 'land'];
 const ROLES = ['pet', 'notice', 'cheer', 'question', 'plead', 'angry', 'swipe', 'land', 'pounce', 'fling', 'pop'];
@@ -132,10 +133,14 @@ function loadPack(dir) {
 		paw: B.paw ? [B.paw.__arr[0], B.paw.__arr[1]] : [9 * unit, 8 * unit], shadow: B.shadow ?? 6 * unit,
 	};
 	const speed = { walk: T.speed?.walk ?? 24 * unit, run: T.speed?.run ?? 70 * unit };
-	const anims = {};
+	const anims = {}, stands = {};
 	for (const k of ANIMS) {
 		const a = T.anims?.[k];
 		if (!a) continue;
+		if (typeof a === 'string') {   // another animation in its place
+			if (ANIMS.includes(a) && a !== k) stands[k] = a;
+			continue;
+		}
 		let cells = [];
 		if (a.cells) cells = a.cells.__arr.map((c) => [c.__arr[0] ?? c.col, c.__arr[1] ?? c.row]);
 		else {
@@ -171,7 +176,7 @@ function loadPack(dir) {
 	const colors = { ...COLORS, ...(T.colors ? Object.fromEntries(Object.entries(T.colors).filter(([k]) => k !== '__arr')) : {}) };
 	return {
 		id, name: T.name || id, describe: T.describe || '', pronouns: T.pronouns || '', personality: T.personality || '',
-		faces: T.faces === 'left' ? 'left' : 'right', cell: [cw, ch], feet: T.feet || 0, hue: T.hue || 0, look: { saturation: T.saturation ?? 1, contrast: T.contrast ?? 1, lightness: T.lightness ?? 0, tint: T.tint || '#ffffff', tint_amount: T.tint ? (T.tint_amount ?? 1) : 0, recolor: T.recolor ? Object.fromEntries(Object.entries(T.recolor).filter(([k]) => k !== '__arr')) : {} }, body, speed, anims, poses, colors, sheet, files, defaults, soundSet,
+		faces: T.faces === 'left' ? 'left' : 'right', cell: [cw, ch], feet: T.feet || 0, hue: T.hue || 0, look: { saturation: T.saturation ?? 1, contrast: T.contrast ?? 1, lightness: T.lightness ?? 0, tint: T.tint || '#ffffff', tint_amount: T.tint ? (T.tint_amount ?? 1) : 0, recolor: T.recolor ? Object.fromEntries(Object.entries(T.recolor).filter(([k]) => k !== '__arr')) : {} }, body, speed, anims, stands, poses, colors, sheet, files, defaults, soundSet,
 	};
 }
 
@@ -264,7 +269,7 @@ async function api(what, q, req) {
 				const P = loadPack(e.path);
 				const sounds = Object.fromEntries(Object.entries(P.files).map(([k, v]) => [k, v.map((f) => path.basename(f))]));
 				const anims = Object.fromEntries(Object.entries(P.anims));
-				return [200, { id, user: e.user, editor, name: P.name, describe: P.describe, pronouns: P.pronouns, personality: P.personality, faces: P.faces, cell: P.cell, feet: P.feet, hue: P.hue, ...P.look, body: P.body, speed: P.speed, anims, poses: P.poses, sounds, default_sounds: P.defaults, sound_set: P.soundSet, colors: P.colors, warnings: [] }];
+				return [200, { id, user: e.user, editor, name: P.name, describe: P.describe, pronouns: P.pronouns, personality: P.personality, faces: P.faces, cell: P.cell, feet: P.feet, hue: P.hue, ...P.look, body: P.body, speed: P.speed, anims, stands: P.stands, poses: P.poses, sounds, default_sounds: P.defaults, sound_set: P.soundSet, colors: P.colors, warnings: [] }];
 			} catch (err) {
 				return [200, { id, user: e.user, editor, error: err.message }];
 			}
@@ -325,6 +330,7 @@ const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; ch
 createServer(async (req, res) => {
 	const u = new URL(req.url, 'http://x');
 	try {
+		if (fakeUpdater(req, res, u)) return;
 		if (u.pathname.startsWith('/editor/api/')) {
 			if (u.searchParams.get('k') !== KEY) return res.writeHead(403).end('{"error":"key"}');
 			const [status, out, type] = await api(u.pathname.slice(12), u.searchParams, req);

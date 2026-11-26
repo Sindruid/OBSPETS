@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Pet editor</title>
 <meta name="theme-color" content="#0a0a0a">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 32 32%27%3E%3Crect width=%2732%27 height=%2732%27 fill=%27%230a0a0a%27/%3E%3Cg fill=%27%23e24b1a%27%3E%3Cellipse cx=%2716%27 cy=%2721.5%27 rx=%277%27 ry=%276%27/%3E%3Cellipse cx=%277.5%27 cy=%2714%27 rx=%272.6%27 ry=%273.3%27/%3E%3Cellipse cx=%2712.5%27 cy=%278.5%27 rx=%272.7%27 ry=%273.5%27/%3E%3Cellipse cx=%2719.5%27 cy=%278.5%27 rx=%272.7%27 ry=%273.5%27/%3E%3Cellipse cx=%2724.5%27 cy=%2714%27 rx=%272.6%27 ry=%273.3%27/%3E%3C/g%3E%3C/svg%3E">
 <link rel="stylesheet" href="editor.css">
 </head>
 <body>
@@ -17,6 +18,8 @@
 	</div>
 	<div class="grow"></div>
 	<span id="saved" class="saved"></span>
+	<span id="updateSlot"></span>
+	<a id="settingsLink" class="btn ghost" href="#" target="_blank" rel="noopener">Settings &#8599;</a>
 	<button id="use" class="primary" hidden>Show on my Pet</button>
 	<div class="menu-wrap">
 		<button id="more" class="ghost icon" aria-label="More">&#8943;</button>
@@ -72,6 +75,8 @@
 		<div class="tab" id="tab-anims">
 			<div class="sheet-bar" id="sheetBar" hidden></div>
 			<div class="slots" id="slots"></div>
+			<h3 class="sub">For reactions <span class="muted">No borrowing: a reaction stays off until its animation is here, or one stands in.</span></h3>
+			<div class="slots" id="slotsReact"></div>
 			<h3 class="sub">Jump poses <span class="muted">Single frames held mid-jump.</span></h3>
 			<div class="slots poses" id="poses"></div>
 			<div class="inspector" id="inspector"></div>
@@ -128,5 +133,6 @@
 <input type="file" id="filePick" hidden multiple>
 
 <script src="editor.js"></script>
+<script src="/update/update.js"></script>
 </body>
 </html>

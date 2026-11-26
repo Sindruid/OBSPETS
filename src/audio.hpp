@@ -23,8 +23,8 @@ using ClipPtr = std::shared_ptr<const Clip>;
 // or nullptr with `err` saying why.
 ClipPtr load_wav(const std::string &path, uint32_t rate, std::string &err);
 
-// Mixes whatever is playing and hands it to OBS in 10 ms blocks, on its own thread, only while
-// something plays.
+// Mixes whatever is playing and hands it to OBS in 10 ms blocks, on its own thread, all the time
+// (silence between sounds keeps OBS's timing for the source steady).
 class Mixer {
 public:
 	explicit Mixer(obs_source_t *source);

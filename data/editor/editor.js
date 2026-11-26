@@ -17,19 +17,33 @@ const KEY = new URLSearchParams(location.search).get('k') || '';
 
 // ------------------------------------------------------------------ what a character has
 
+// `what`: what the pet uses it for, short enough for a tile. `group`: "reaction" ones never borrow
+// another: the reactions that need one stay off until the character has it, or names a stand-in.
 const ANIMS = [
-	{ k: 'idle', name: 'Idle', what: 'Sitting, breathing', req: true },
-	{ k: 'look', name: 'Look', what: 'Looking around, alerts' },
-	{ k: 'walk', name: 'Walk', what: 'Wandering about' },
-	{ k: 'run', name: 'Run', what: 'Zoomies, dashing' },
-	{ k: 'sleep', name: 'Sleep', what: "Napping, z's float up" },
-	{ k: 'clean', name: 'Groom', what: 'Washing, content' },
-	{ k: 'clean2', name: 'Groom 2', what: 'A second washing loop' },
-	{ k: 'paw', name: 'Swat', what: 'A swipe at things' },
-	{ k: 'scared', name: 'Scared', what: 'Startled, puffed up, angry' },
+	{ k: 'idle', name: 'Idle', what: 'Standing about. The rest borrow it', req: true },
+	{ k: 'look', name: 'Look', what: 'Watching chat and alerts' },
+	{ k: 'walk', name: 'Walk', what: 'Wandering, going to chat' },
+	{ k: 'run', name: 'Run', what: 'Zoomies, raids, dashes' },
+	{ k: 'sleep', name: 'Sleep', what: "Naps, z's float up" },
+	{ k: 'paw', name: 'Swat', what: 'Swats, play, ripping lines' },
+	{ k: 'clean', name: 'Content', what: 'Pleased: grooming, panting' },
+	{ k: 'clean2', name: 'Content 2', what: 'Idling, soaking up hearts' },
+	{ k: 'stretch', name: 'Stretch', what: 'Before naps, snubbing chat' },
+	{ k: 'call', name: 'Call', what: 'A bark or meow, with the sound' },
+	{ k: 'beg', name: 'Beg', what: 'Begging chat', group: 'reaction' },
+	{ k: 'scared', name: 'Scared', what: 'Startled, scared off', group: 'reaction' },
+	{ k: 'angry', name: 'Angry', what: 'Cross at chat', group: 'reaction' },
 ];
-const SHEET_ORDER = ['idle', 'look', 'clean', 'clean2', 'walk', 'run', 'sleep', 'paw', 'scared'];
-const FALLBACK = { look: 'idle', clean: 'idle', clean2: 'clean', walk: 'idle', run: 'walk', sleep: 'idle', paw: 'idle', scared: 'look' };
+// The chat reactions each one is needed for (the plugin's REACT_NEEDS): off without it
+const NEEDED_BY = {
+	look: ['Curious', 'Unimpressed'], run: ['Zoomies'], sleep: ['Naps'], paw: ['Plays', 'Swats at chat', 'Rips a message out'],
+	beg: ['Begs'], scared: ['Startled', 'Scared'], angry: ['Angry'],
+};
+const SHEET_ORDER = ['idle', 'look', 'clean', 'clean2', 'walk', 'run', 'sleep', 'paw', 'stretch', 'call', 'beg', 'scared', 'angry'];
+const FALLBACK = {
+	look: 'idle', clean: 'idle', clean2: 'clean', walk: 'idle', run: 'walk', sleep: 'idle', paw: 'idle',
+	stretch: 'clean', call: 'look', beg: 'look', scared: 'look', angry: 'scared',
+};
 const POSES = [
 	{ k: 'crouch', name: 'Crouch', what: 'Before a jump or pounce', fb: 'idle' },
 	{ k: 'rise', name: 'Rise', what: 'Going up', fb: 'crouch' },
@@ -40,8 +54,9 @@ const POSES = [
 const SLOT_WORDS = {
 	idle: ['idle', 'sit', 'stand', 'breath'], look: ['look', 'alert', 'listen', 'notice'], walk: ['walk'],
 	run: ['run', 'dash', 'sprint', 'gallop'], sleep: ['sleep', 'nap', 'rest', 'lie'], clean2: ['clean2', 'groom2', 'wash2', 'lick2'],
-	clean: ['clean', 'groom', 'wash', 'lick'], paw: ['paw', 'swat', 'swipe', 'attack', 'hit', 'claw'],
-	scared: ['scared', 'scare', 'fright', 'hurt', 'angry', 'hiss', 'puff'],
+	clean: ['clean', 'groom', 'wash', 'lick', 'pant'], paw: ['paw', 'swat', 'swipe', 'attack', 'hit', 'claw'],
+	stretch: ['stretch', 'yawn', 'bow'], call: ['call', 'bark', 'meow', 'speak', 'howl'], beg: ['beg', 'plead', 'situp', 'sit_up'],
+	scared: ['scared', 'scare', 'fright', 'hurt', 'cower', 'puff'], angry: ['angry', 'hiss', 'growl', 'mad', 'rage'],
 	crouch: ['crouch'], rise: ['rise', 'jumpup', 'jump_up'], fall: ['fall', 'jumpdown', 'jump_down'], land: ['land'],
 };
 
@@ -184,7 +199,7 @@ const S = {
 function blankPack(name) {
 	return {
 		format: 1, name, describe: '', pronouns: '', personality: '', faces: 'right',
-		anims: {}, poses: {}, body: { auto: true }, speed: null, sounds: {}, sound_set: 'default', colors: {}, ...lookDefaults(),
+		anims: {}, stands: {}, poses: {}, body: { auto: true }, speed: null, sounds: {}, sound_set: 'default', colors: {}, ...lookDefaults(),
 	};
 }
 
@@ -192,10 +207,13 @@ function blankPack(name) {
 
 const meta = (k) => S.pack.anims[k] || S.pack.poses[k];
 const has = (k) => !!(S.strips[k] && meta(k) && (S.pack.anims[k] || S.pack.poses[k].own));
+// the animation another one stands in for it with (`angry = "scared"` in pack.lua), if it has none of its own
+const standIn = (k) => (!has(k) && S.pack.stands?.[k] && S.pack.stands[k] !== k ? S.pack.stands[k] : null);
+const hasOrStand = (k) => has(k) || !!standIn(k);
 function resolveAnim(k) {
 	let x = k;
-	while (x && !has(x)) x = FALLBACK[x];
-	return x || null;
+	for (let i = 0; x && !has(x) && i < 2 * SHEET_ORDER.length; i++) x = standIn(x) || FALLBACK[x];
+	return x && has(x) ? x : null;
 }
 // the strip and frame a pose shows
 function poseFrame(k) {
@@ -485,6 +503,10 @@ function buildLua(where, cw, ch) {
 		if (k === 'paw') s += `, whoosh = ${clamp(a.whoosh | 0, 0, n - 1)}, hit = ${clamp(a.hit | 0, 0, n - 1)}`;
 		L.push(s + ' },');
 	}
+	for (const k of SHEET_ORDER) {
+		const to = !(k in where.anims) && p.stands?.[k];
+		if (to && SHEET_ORDER.includes(to)) L.push(`		${k} = ${luaStr(to)},   -- stands in`);
+	}
 	L.push('\t},');
 	L.push('\tposes = {');
 	for (const { k } of POSES) {
@@ -688,6 +710,7 @@ async function convert(info) {
 		return c;
 	};
 	const cellKey = {};
+	p.stands = { ...(info.stands || {}) };
 	for (const [k, a] of Object.entries(info.anims)) {
 		S.strips[k] = cut(a.cells);
 		p.anims[k] = { frames: a.cells.length, fps: a.fps, dx: 0, dy: 0 };
@@ -1550,6 +1573,7 @@ function applyStrip(k, r, quiet = false) {
 			a.hit = Math.min(n - 1, a.whoosh + 1);
 		}
 		S.pack.anims[k] = a;
+		if (S.pack.stands) delete S.pack.stands[k];
 		// jump poses that pointed past the new frames go back to automatic
 		for (const p of Object.values(S.pack.poses)) if (p.anim === k && p.frame >= n) p.frame = 0;
 	}
@@ -2574,7 +2598,7 @@ function drawStage(t) {
 	x.restore();
 	if (S.guides) drawGuides(x, cx, ground, z, m, cw, ch);
 	else guideLabels(W, H, []);
-	const borrowed = !POSES.some((p) => p.k === S.sel) && f && f[0] !== S.sel;
+	const borrowed = !POSES.some((p) => p.k === S.sel) && f && f[0] !== S.sel && !standIn(S.sel);
 	const nm = [...ANIMS, ...POSES].find((a) => a.k === S.sel)?.name;
 	const by = f && [...ANIMS, ...POSES].find((a) => a.k === f[0])?.name;
 	if (S.show) $('#playing').textContent = '\u266A ' + VOICE.find((v) => v.k === S.show.role).name;
@@ -2634,12 +2658,14 @@ function drawThumb(c, k, t) {
 	const x = ctx2d(c), W = c.width, H = c.height;
 	x.clearRect(0, 0, W, H);
 	if (!S.pack || !has('idle') && !has(k)) return;
+	const def = ANIMS.find((a) => a.k === k);
+	if (def && (def.group === 'reaction' || k === 'call') && !hasOrStand(k)) return;   // (never borrows: nothing to show)
 	const f = frameNow(k, t);
 	if (!f) return;
 	const { cw, ch } = cellSize();
 	const m = measure();
 	const z = Math.max(1, Math.floor(Math.min((W - 8) / cw, (H - 10) / (m.body.top + 3))));
-	const own = POSES.some((p) => p.k === k) ? S.pack.poses[k] : has(k);
+	const own = POSES.some((p) => p.k === k) ? S.pack.poses[k] : hasOrStand(k);
 	x.globalAlpha = own ? 1 : 0.32;
 	drawPet(x, f[0], f[1], (W - cw * z) / 2, H - 6 - (ch - m.feet) * z, z, cw, ch);
 	x.globalAlpha = 1;
@@ -2696,9 +2722,17 @@ function slotState(k) {
 		const a = S.pack.anims[k];
 		return { own: true, text: `${geom(k).n} frame${geom(k).n === 1 ? '' : 's'} · ${round1(a.fps)} fps` };
 	}
-	if (ANIMS.find((a) => a.k === k).req) return { own: false, text: 'Needed: drop one here' };
+	const def = ANIMS.find((a) => a.k === k);
+	if (def.req) return { own: false, text: 'Needed: drop one here' };
+	const name = (x) => ANIMS.find((a) => a.k === x).name;
+	if (standIn(k)) return { own: true, stand: true, text: `${name(standIn(k))} stands in` };
+	const off = NEEDED_BY[k];
+	const offTxt = off && (off.length === 1 ? `${off[0]} off` : `${off.length} reactions off`);
+	if (def.group === 'reaction') return { own: false, need: true, text: off.length === 1 ? `Off: ${off[0]}` : `Off: ${off.join(', ')}` };
+	if (k === 'call') return { own: false, text: 'None: sound only' };
 	const r = resolveAnim(k);
-	return { own: false, text: r ? `Borrows ${ANIMS.find((a) => a.k === r).name}` : 'Empty' };
+	const by = r ? `Borrows ${name(r)}` : 'Empty';
+	return { own: false, need: !!off, text: off ? `${by} · ${offTxt}` : by };
 }
 
 function slotCard(def) {
@@ -2706,12 +2740,14 @@ function slotCard(def) {
 	const st = slotState(k);
 	const isPose = POSES.some((p) => p.k === k);
 	const el = h('button', {
-		class: `slot${S.sel === k ? ' sel' : ''}${st.own ? '' : ' empty'}${def.req ? ' req' : ''}`,
-		title: def.what,
+		class: `slot${S.sel === k ? ' sel' : ''}${st.own ? '' : ' empty'}${def.req ? ' req' : ''}${st.need ? ' need' : ''}${st.stand ? ' stand' : ''}`,
+		title: `${def.what}${NEEDED_BY[k] ? `
+Needed for ${NEEDED_BY[k].join(', ')}` : ''}
+${st.text}`,
 		onclick: () => select(k),
 	},
 	h('canvas', { width: isPose ? 120 : 160, height: isPose ? 72 : 92, 'data-thumb': k }),
-	!st.own && !has('idle') ? h('div', { class: 'plus', text: '+ Drop here' }) : null,
+	!st.own && (!has('idle') || def.group === 'reaction' || k === 'call') ? h('div', { class: 'plus', text: '+ Drop here' }) : null,
 	h('div', { class: 'meta' }, h('div', { class: 'name', text: def.name }), isPose ? null : h('div', { class: 'what', text: def.what }), h('div', { class: 'state', text: st.text })));
 	dropTarget(el, (files) => importInto(k, files));
 	return el;
@@ -2725,7 +2761,8 @@ function renderSlots() {
 		h('div', { class: 'grow' }, h('b', { text: 'One image with every animation?' }), ' ', h('span', { class: 'muted', text: 'Add them all at once.' })),
 		S.sheetMap ? h('button', { text: 'Edit sheet', title: S.sheetMap.name, onclick: () => openSheet(null, S.sel) }) : null,
 		h('button', { class: S.sheetMap ? 'ghost' : 'primary', text: S.sheetMap ? 'Another sheet…' : 'Add a sprite sheet…', onclick: () => pick(sheetFromFiles) })].filter(Boolean));
-	$('#slots').replaceChildren(...ANIMS.map(slotCard));
+	$('#slots').replaceChildren(...ANIMS.filter((a) => !a.group).map(slotCard));
+	$('#slotsReact').replaceChildren(...ANIMS.filter((a) => a.group === 'reaction').map(slotCard));
 	$('#poses').replaceChildren(...POSES.map(slotCard));
 }
 
@@ -2817,9 +2854,28 @@ function renderInspector() {
 	if (!has(k)) {
 		const r = resolveAnim(k);
 		const by = r && ANIMS.find((a) => a.k === r).name;
+		const need = NEEDED_BY[k], stand = standIn(k);
+		const why = def.req ? 'Every character needs this one. Everything else can borrow from it.'
+			: stand ? `${ANIMS.find((a) => a.k === stand).name} stands in for it${need ? `, so ${need.join(', ')} can play` : ''}. Add one of its own any time.`
+			: def.group === 'reaction' ? `Without one, ${need.join(', ')} stay${need.length === 1 ? 's' : ''} off: a borrowed animation would look wrong.`
+			: by ? `Until you add one, it borrows ${by}${need ? `, and ${need.join(', ')} stay${need.length === 1 ? 's' : ''} off` : ''}.` : 'Add idle first.';
+		// another animation in its place: the reactions that need this one come on, and the tile says which it is
+		const standSel = def.req ? null : h('select', {
+			disabled: ro,
+			onchange: (e) => {
+				S.pack.stands = S.pack.stands || {};
+				if (e.target.value) S.pack.stands[k] = e.target.value;
+				else delete S.pack.stands[k];
+				changed(false);
+				renderSlots();
+				renderInspector();
+			},
+		}, h('option', { value: '', text: def.group === 'reaction' ? 'None (reactions stay off)' : 'None (borrows automatically)' }),
+		...ANIMS.filter((a) => a.k !== k && has(a.k)).map((a) => h('option', { value: a.k, text: a.name, selected: stand === a.k })));
 		parts.push(h('div', { class: 'empty-insp' },
 			h('div', { class: 'big', html: `<b>${def.name}</b>: ${escapeHtml(def.what.toLowerCase())}` }),
-			h('div', { class: 'muted', text: def.req ? 'Every character needs this one. Everything else can borrow from it.' : by ? `Until you add one, it borrows ${by}.` : 'Add idle first.' }),
+			h('div', { class: 'muted', text: why }),
+			standSel ? h('label', { class: 'stand-row' }, h('span', { text: 'Stand-in' }), standSel) : null,
 			ro ? null : h('div', { class: 'row' },
 				S.sheetMap ? h('button', { class: 'primary', text: 'Pick it from your sheet', onclick: () => openSheet(null, k) }) : null,
 				h('button', { class: S.sheetMap ? '' : 'primary', text: 'Choose an image…', onclick: () => pick((f) => importInto(k, f)) }),
@@ -3366,6 +3422,17 @@ function wire() {
 	});
 }
 
+// The Update card (/update/update.js): save before OBS closes for an update, and don't reload into
+// the new version over unsaved work
+window.OBSPET_UPDATE_HOOKS = {
+	async beforeUpdate() {
+		clearTimeout(saveTimer);
+		await save();
+		if (S.dirty.size || S.dirtyMeta || S.dirtySheet) throw new Error('the character has unsaved changes');
+	},
+	canReload: () => !(S.dirty.size || S.dirtyMeta || S.dirtySheet || saving),
+};
+
 async function start() {
 	wire();
 	requestAnimationFrame(loop);
@@ -3373,6 +3440,8 @@ async function start() {
 		document.body.innerHTML = '<p style="padding:40px">Open this from OBS: the Pet’s properties → <b>Open pet editor</b></p>';
 		return;
 	}
+	const sl = $('#settingsLink');
+	if (sl) sl.href = `/settings/?k=${encodeURIComponent(KEY)}`;
 	try {
 		await refreshPacks();
 		S.defaults = await apiJson('defaults').catch(() => ({}));

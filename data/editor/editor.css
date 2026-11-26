@@ -32,25 +32,29 @@ b { font-weight: 600; }
 [hidden] { display: none !important; }
 
 /* controls */
-button {
+button, .btn {
 	background: var(--panel2); border: 1px solid var(--line2); border-radius: var(--radius);
 	padding: 6px 12px; cursor: pointer; white-space: nowrap;
 }
-button:hover { background: var(--hover); border-color: var(--accent-line); }
+button:hover, .btn:hover { background: var(--hover); border-color: var(--accent-line); }
 button:disabled { opacity: .45; cursor: default; }
-button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 600; }
-button.primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
-button.ghost { background: transparent; border-color: transparent; color: var(--muted); }
-button.ghost:hover { background: var(--panel2); border-color: transparent; color: var(--text); }
-button.small { padding: 3px 8px; font-size: 12px; }
+button.primary, .btn.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 600; }
+button.primary:hover, .btn.primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+button.ghost, .btn.ghost { background: transparent; border-color: transparent; color: var(--muted); }
+button.ghost:hover, .btn.ghost:hover { background: var(--panel2); border-color: transparent; color: var(--text); }
+button.small, .btn.small { padding: 3px 8px; font-size: 12px; }
 button.icon { font-size: 18px; line-height: 1; padding: 5px 9px; }
 button.danger, .danger { color: var(--danger); }
 button.on { color: var(--text); background: var(--panel2); }
+a.btn { display: inline-flex; align-items: center; color: inherit; text-decoration: none; }
+a.btn.primary { color: var(--accent-ink); }
+a.btn.ghost { color: var(--muted); }
+a.btn.ghost:hover { color: var(--text); }
 input, select, textarea {
 	background: var(--bg); border: 1px solid var(--line2); border-radius: var(--radius); padding: 6px 9px; width: 100%;
 }
 input:focus, select:focus, textarea:focus { outline: none; border-color: var(--accent); }
-button:focus-visible, :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+button:focus-visible, .btn:focus-visible, :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 input[type=range] { padding: 0; accent-color: var(--accent); background: none; border: 0; }
 input[type=range]:focus { outline: none; }
 input[type=checkbox] { width: auto; accent-color: var(--accent); }
@@ -137,11 +141,19 @@ h3.sub .muted { font-size: 13px; margin-left: 8px; }
 .slot canvas { display: block; width: 100%; height: 88px; image-rendering: pixelated; background: var(--well); }
 .slot .meta { padding: 7px 10px 8px; }
 .slot .name { font-weight: 600; display: flex; align-items: center; gap: 6px; }
-.slot .what { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.slot .state { font-size: 11px; color: var(--faint); margin-top: 1px; }
+.slot .what {
+	color: var(--muted); font-size: 12px; line-height: 1.3; min-height: 2.6em; overflow: hidden; white-space: normal;
+	display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+}
+.slot .state { font-size: 11px; color: var(--faint); margin-top: 1px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .slot.empty canvas { opacity: .35; }
 .slot.empty .state { color: var(--warn); }
 .slot.req.empty .state { color: var(--danger); }
+.slot.need .state { color: var(--danger); }
+.slot.stand .state { color: var(--muted); font-style: italic; }
+.stand-row { display: flex; align-items: center; gap: 10px; margin: 10px 0 2px; }
+.stand-row span { color: var(--muted); font-size: 12px; }
+.stand-row select { width: auto; min-width: 200px; }
 .slot .plus {
 	position: absolute; top: 0; left: 0; right: 0; height: 88px; display: flex; align-items: center; justify-content: center;
 	color: var(--faint); font-size: 12px; pointer-events: none;

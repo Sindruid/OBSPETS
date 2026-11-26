@@ -43,6 +43,8 @@ public:
 	obs_properties_t *properties();
 	static void defaults(obs_data_t *s);
 	void enum_active(obs_source_enum_proc_t cb, void *param);
+	std::string status_text();
+	bool has_browser() const { return browser_ != nullptr; }
 
 	// for Pets (any thread)
 	static ChatSource *from(obs_source_t *s);   // nullptr unless it's an OBSPETS Chat
@@ -85,6 +87,7 @@ private:
 	uint32_t w_ = 450, h_ = 700;
 	float since_check_ = 0;
 	std::string url_;
+	std::string last_hub_sig_;
 };
 
 void register_chat_source();

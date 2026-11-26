@@ -3,10 +3,14 @@
 #include "pet.hpp"
 #include "chat-source.hpp"
 #include "editor.hpp"
+#include "settings.hpp"
 
 #include <obs-frontend-api.h>
 #include <graphics/vec2.h>
 #include <util/platform.h>
+
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
 
 #include <algorithm>
 #include <cmath>
@@ -14,14 +18,13 @@
 
 namespace obspet {
 
-static const char *SOURCE_ID = "obspet";   // OBS saves sources by this id: changing it orphans existing Pets
+const char *PET_SOURCE_ID = "obspet";   // OBS saves sources by this id: changing it orphans existing Pets
 static const double LABEL_LIFE = 4.5;
 static const char *DEFAULT_PACKS[] = {"blob"};   // the first one found is the default character
 // the characters pets 2, 3, ... start as (the default character if one isn't there)
 static const char *EXTRA_PACKS[] = {"cat-ginger", "dog-retriever", "cat-black", "dog-husky", "cat-tabby"};
 
-// "How often it reacts to chat": seconds between chat reactions (the mood engine's gap), and
-// between the sounds it makes for them (mood_gap), at least
+// "How chatty" before 0.6 (now "chatty_s", seconds): the seconds each choice meant
 static const struct {
 	const char *id, *label;
 	int every, sound_gap;
@@ -275,6 +278,14 @@ std::string PetSource::pack_status()
 					 : " is loaded, with OBSPETS's " + P->sound_set + " sounds.");
 	if (!P->borrowed.empty())
 		s += "\nStand-ins for missing animations: " + P->borrowed + ".";
+	std::string off;
+	for (auto &r : REACTS) {
+		std::string need = P->lacks(r.id);
+		if (!need.empty())
+			off += (off.empty() ? "" : "; ") + std::string(r.label) + " (needs " + need + ")";
+	}
+	if (!off.empty())
+		s += "\nOff until it has the animation: " + off + ".";
 	if (!err.empty())
 		s += "\nThe last reload failed, so this is still the old one: " + err;
 	for (size_t i = 0; i < P->warnings.size(); i++) {
@@ -325,6 +336,51 @@ static obs_monitoring_type monitoring_of(Hear h)
 				 : OBS_MONITORING_TYPE_MONITOR_AND_OUTPUT;
 }
 
+// OBS 33 has monitoring on or off only (monitored sources always reach the stream too), and its
+// monitoring "type" calls are deprecated (each logs a warning). We build against older headers,
+// so the new calls are looked up at run time.
+using SetMonitoring = void (*)(obs_source_t *, bool);
+using GetMonitoring = bool (*)(const obs_source_t *);
+static FARPROC obs_proc(const char *name)
+{
+	HMODULE m = GetModuleHandleW(L"obs.dll");
+	return m ? GetProcAddress(m, name) : nullptr;
+}
+static SetMonitoring set_monitoring_enabled()
+{
+	static auto f = reinterpret_cast<SetMonitoring>(obs_proc("obs_source_set_monitoring_enabled"));
+	return f;
+}
+static GetMonitoring get_monitoring_enabled()
+{
+	static auto f = reinterpret_cast<GetMonitoring>(obs_proc("obs_source_get_monitoring_enabled"));
+	return f;
+}
+
+static void apply_monitoring(obs_source_t *s, Hear h)
+{
+	if (auto f = set_monitoring_enabled())
+		f(s, h != Hear::Stream);
+	else
+		obs_source_set_monitoring_type(s, monitoring_of(h));
+}
+
+static const char *read_monitoring(obs_source_t *s)
+{
+	if (auto f = get_monitoring_enabled())
+		return f(s) ? "both" : "stream";
+	obs_monitoring_type m = obs_source_get_monitoring_type(s);
+	return m == OBS_MONITORING_TYPE_NONE ? "stream" : m == OBS_MONITORING_TYPE_MONITOR_ONLY ? "me" : "both";
+}
+
+// OBS 32 and newer stop the echo themselves: when a Desktop Audio (Audio Output Capture) source
+// records the monitoring device, OBS leaves monitored sources out of the tracks it shares, so the
+// stream gets the pet once, through the capture. Older OBS sends it twice.
+bool obs_prevents_monitoring_echo()
+{
+	return obs_get_version() >= MAKE_SEMANTIC_VERSION(32, 0, 0);
+}
+
 // "Who hears it" is OBS's audio monitoring for the source (on the UI thread, which owns it). Off
 // leaves it as it was: the pet just makes no sound.
 void set_monitoring(obs_source_t *src, Hear h)
@@ -334,15 +390,15 @@ void set_monitoring(obs_source_t *src, Hear h)
 	obs_queue_task(
 		OBS_TASK_UI,
 		[](void *p) {
-			auto *a = static_cast<std::pair<obs_weak_source_t *, obs_monitoring_type> *>(p);
+			auto *a = static_cast<std::pair<obs_weak_source_t *, Hear> *>(p);
 			if (obs_source_t *s = obs_weak_source_get_source(a->first)) {
-				obs_source_set_monitoring_type(s, a->second);
+				apply_monitoring(s, a->second);
 				obs_source_release(s);
 			}
 			obs_weak_source_release(a->first);
 			delete a;
 		},
-		new std::pair<obs_weak_source_t *, obs_monitoring_type>(obs_source_get_weak_source(src), monitoring_of(h)),
+		new std::pair<obs_weak_source_t *, Hear>(obs_source_get_weak_source(src), h),
 		false);
 }
 
@@ -366,12 +422,9 @@ static void first_audio(obs_source_t *src, bool first, Hear want)
 				if (a->first) {
 					obs_source_set_audio_mixers(s, 0x3F);
 					if (a->want != Hear::Off)
-						obs_source_set_monitoring_type(s, monitoring_of(a->want));
+						apply_monitoring(s, a->want);
 				} else if (a->want != Hear::Off) {
-					obs_monitoring_type m = obs_source_get_monitoring_type(s);
-					const char *got = m == OBS_MONITORING_TYPE_NONE ? "stream"
-							  : m == OBS_MONITORING_TYPE_MONITOR_ONLY ? "me"
-												  : "both";
+					const char *got = read_monitoring(s);
 					if (hear_of(got) != a->want) {
 						Data u = data_new();
 						obs_data_set_string(u.get(), "hear", got);
@@ -445,7 +498,9 @@ void PetSource::defaults(obs_data_t *s)
 	obs_data_set_default_string(s, "reward", "Pet {name}");
 	obs_data_set_default_bool(s, "moods", true);
 	obs_data_set_default_bool(s, "allow_delete", true);
-	obs_data_set_default_string(s, "chatty", "sometimes");
+	obs_data_set_default_int(s, "chatty_s", 5);   // the shortest wait between chat reactions (s)
+	obs_data_set_default_bool(s, "automod", true);
+	obs_data_set_default_bool(s, "automod_show", true);
 	obs_data_set_default_string(s, "personality", "");
 	obs_data_set_default_string(s, "ignore", DEFAULT_BOTS);
 	obs_data_set_default_string(s, "label_after", " pet {name}");
@@ -518,6 +573,17 @@ void Pet::update(obs_data_t *s)
 	floor_px = (double)obs_data_get_int(s, "floor");
 	perch_name = trim(str(s, "perch"));
 	avoid_names = avoid_list(s);
+	sit_names.clear();
+	if (obs_data_array_t *arr = obs_data_get_array(s, "sit_on")) {
+		for (size_t i = 0; i < obs_data_array_count(arr); i++) {
+			obs_data_t *it = obs_data_array_item(arr, i);
+			std::string n = trim(str(it, "value"));
+			if (!n.empty())
+				sit_names.insert(n);
+			obs_data_release(it);
+		}
+		obs_data_array_release(arr);
+	}
 	visit = obs_data_get_double(s, "visit");
 	perch_box = obs_data_get_bool(s, "perch_box");
 	other_yank = obs_data_get_bool(s, "other_yank");
@@ -526,6 +592,8 @@ void Pet::update(obs_data_t *s)
 	alert_name = trim(str(s, "alert"));
 	reactions = obs_data_get_bool(s, "reactions");
 	twitch_alerts = obs_data_get_bool(s, "twitch_alerts");
+	automod = obs_data_get_bool(s, "automod");
+	automod_show = obs_data_get_bool(s, "automod_show");
 	name = trim(str(s, k("name").c_str()));
 	if (name.empty())
 		name = pack ? pack->name : "Pet";
@@ -547,16 +615,17 @@ void Pet::update(obs_data_t *s)
 		}
 	}
 	hear = hear_of(str(s, "hear"));
-	int every = 15;
-	mood_gap = 30;
-	for (auto &c : CHATTY)
-		if (str(s, "chatty") == c.id)
-			every = c.every, mood_gap = c.sound_gap;
-	scan_t = 0;
+	int every = (int)std::clamp<long long>(obs_data_get_int(s, "chatty_s"), 3, 120);
+	mood_gap = std::max(10, every * 2);   // (its sounds for them: half as often)
+	owner->scene_t = 0;   // (look at the scene again: the chat, alert or kept-off sources may have changed)
 
 	// what the chat-mood engine needs from this Pet
-	mood.on = reactions && obs_data_get_bool(s, "moods");
-	mood.allow_delete = obs_data_get_bool(s, "allow_delete");
+	// Auto mod runs whether or not the pet reacts to chat; with no chat reactions, it's all the AI
+	// is asked about
+	bool react_chat = reactions && obs_data_get_bool(s, "moods");
+	mood.on = react_chat || automod;
+	mood.automod_only = !react_chat;
+	mood.allow_delete = automod;
 	mood.gap = every;
 	mood.name = name;
 	mood.describe = pack ? pack->describe : "";
@@ -575,12 +644,21 @@ void Pet::update(obs_data_t *s)
 	wont.clear();
 	mood.skip.clear();
 	for (auto &r : REACTS)
-		if (!obs_data_get_bool(s, do_key(r.id, slot).c_str())) {
+		// off by choice, or the character has no animation it needs (REACT_NEEDS)
+		if (!obs_data_get_bool(s, do_key(r.id, slot).c_str()) || (pack && !pack->lacks(r.id).empty())) {
 			wont.insert(r.id);
 			// (a rip is also how Auto mod deletes: the model may still pick it; this pet just won't act it out)
 			if (strncmp(r.label, "Chat:", 5) == 0 && strcmp(r.id, "yank") != 0)
 				mood.skip.push_back(r.id);
 		}
+	// ripping a deleted message out on stream takes a pet that reacts, and does "yank"
+	mood.show_deletes = automod_show && reactions && !wont.count("yank");
+	if (mood.automod_only) {   // the model is only offered "none" and "yank" (how Auto mod deletes)
+		mood.skip.clear();
+		for (int i = 0; i < MOOD_COUNT; i++)
+			if (strcmp(MOOD_NAMES[i], "yank") != 0)
+				mood.skip.push_back(MOOD_NAMES[i]);
+	}
 	if (slot == 0) {
 		std::lock_guard<std::mutex> g(owner->mu_);
 		owner->ui.name = name;
@@ -647,6 +725,24 @@ PetSource::PetSource(obs_data_t *settings, obs_source_t *src) : source(src)
 		obs_data_erase(settings, "mood_every");
 	}
 	obs_data_erase(settings, "mood_gap");
+	// 0.6: "how chatty" is seconds; Auto mod has its own switches (it ran when chat reactions did,
+	// and "Auto mod only" hid the pet and its reactions: now that's chat reactions off)
+	if (obs_data_has_user_value(settings, "chatty")) {
+		for (auto &c : CHATTY)
+			if (str(settings, "chatty") == c.id)
+				obs_data_set_int(settings, "chatty_s", c.every);
+		obs_data_erase(settings, "chatty");
+	}
+	if (!obs_data_has_user_value(settings, "automod")) {
+		auto on = [&](const char *k) { return !obs_data_has_user_value(settings, k) || obs_data_get_bool(settings, k); };
+		bool only = obs_data_get_bool(settings, "automod_only");
+		obs_data_set_bool(settings, "automod", on("allow_delete") && ((on("reactions") && on("moods")) || only));
+		if (only) {
+			obs_data_set_bool(settings, "moods", false);
+			obs_data_set_bool(settings, "automod_show", false);
+		}
+	}
+	obs_data_erase(settings, "automod_only");
 	// written by the chat and alert pages that talked to it over obs-websocket (before 0.5)
 	for (const char *k : {"chat_top", "chat_h", "chat_seq", "pet_seq", "pet_user", "pet_color", "alert_kind", "alert_n",
 			      "alert_seq", "mood_kind", "mood_seq", "mood_user", "mood_color", "mood_text", "mood_fx", "mood_fy",
@@ -930,9 +1026,7 @@ void Pet::tick(double dt)
 	}
 	now += dt;
 	at += dt;
-	scan_t -= dt;
-	if (scan_t <= 0) {
-		scan_t = 0.25;
+	if (scene_seen != owner->scene_n) {   // (the source looked at the scene again)
 		scan(*this);
 		if (on == On::Floor && mode == Mode::Ground)
 			y = floorY;
@@ -940,6 +1034,8 @@ void Pet::tick(double dt)
 	// on the chat, follow its top smoothly (the page slides its lines in over about 0.26 s)
 	if (on == On::Perch && has_perch && mode != Mode::Air)
 		y += (perch_y - y) * (1 - std::exp(-dt * 14));
+	if (on == On::Ledge && has_ledge && mode != Mode::Air)
+		y += (on_ledge.y - y) * (1 - std::exp(-dt * 14));
 	if (bobbing) {
 		bob += dt;
 		if (bob > 0.24)
@@ -1092,6 +1188,13 @@ void PetSource::tick(float seconds)
 		refresh_properties();
 	double dt = std::min(0.1, (double)seconds);
 	now += dt;
+	// the scene around the pets, for all of them at once (before they move: the first one also
+	// decides where they start)
+	scene_t -= dt;
+	if (scene_t <= 0 && lead_ && std::any_of(pets.begin(), pets.end(), [](auto &p) { return p->pack != nullptr; })) {
+		scene_t = 0.25;
+		scan_scene(*this);
+	}
 	balance(dt);
 	for (auto &p : pets)
 		p->tick(dt);
@@ -1106,62 +1209,8 @@ void PetSource::render()
 
 // ------------------------------------------------------------------ tests
 
-static const struct {
-	const char *id, *label;
-} TESTS[] = {
-	{"follow", "Someone follows"},
-	{"sub", "Someone subscribes"},
-	{"gift:5", "Someone gifts 5 subs"},
-	{"bits:100", "Someone cheers 100 bits"},
-	{"raid:20", "A raid with 20 viewers"},
-	{"pet", "Someone pets it with channel points"},
-	{"mood:yank", "It rips a message out of the chat"},
-	{"mood:automod", "Auto mod catches spam (nothing is deleted)"},
-	{"chat", "Someone says hi in chat (signed in; read like real chat)"},
-};
-
-// The chat reactions, as the "Try a reaction" list says them (ids from MOOD_NAMES, and "automod":
-// a yank of a made-up spam line, crossed out as when Auto mod deletes one).
-static const struct {
-	const char *id, *label;
-} MOOD_TESTS[] = {
-	{"happy", "Chat: a happy hop"},
-	{"love", "Chat: hearts"},
-	{"greet", "Chat: says hi"},
-	{"curious", "Chat: curious"},
-	{"show_off", "Chat: shows off"},
-	{"play", "Chat: plays"},
-	{"zoomies", "Chat: zoomies"},
-	{"vibe", "Chat: bobs to music"},
-	{"beg", "Chat: begs"},
-	{"sleepy", "Chat: naps"},
-	{"hop_on", "Chat: hops onto the chat"},
-	{"hop_off", "Chat: hops off the chat"},
-	{"swat_chat", "Chat: swats at the chat"},
-	{"judge", "Chat: unimpressed"},
-	{"sulk", "Chat: sulks"},
-	{"startled", "Chat: startled"},
-	{"scared", "Chat: scared"},
-	{"angry", "Chat: angry"},
-	{"yank", "Chat: rips a message out of the chat"},
-	{"automod", "Chat: Auto mod catches spam (crossed out; nothing is deleted)"},
-	// and more alerts
-	{"gift:20", "Someone gifts 20 subs"},
-	{"bits:1000", "Someone cheers 1,000 bits"},
-	{"raid:60", "A raid with 60 viewers"},
-};
-
 void PetSource::test(const std::string &what, const std::string &pack_id)
 {
-	if (what == "chat") {
-		std::string nm;
-		{
-			std::lock_guard<std::mutex> g(mu_);
-			nm = ui.name;
-		}
-		Hub::get().test_chat("inkwell", "hi " + nm + "! you're the best");
-		return;
-	}
 	post([what, pack_id](PetSource &o) {
 		std::vector<Pet *> to;
 		if (!pack_id.empty()) {   // (the editor's "Try it": a pet showing that character)
@@ -1178,24 +1227,14 @@ void PetSource::test(const std::string &what, const std::string &pack_id)
 		}
 		for (Pet *pp : to) {
 			Pet &p = *pp;
-			if (what == "pet") {
+			if (what.rfind("mood:", 0) == 0) {
+				bool automod = what == "mood:automod";
+				o.act_out(p, automod ? "yank" : what.substr(5), automod ? "v1ewb0t_4u" : "inkwell",
+					  automod ? "best viewers and followers on streamboost dot shop" : "this pet is overrated", automod);
+			} else if (what == "pet") {
 				p.has_pet = true;
 				p.next_pet_user = "inkwell";
 				p.next_pet_color = "#a6c1db";
-			} else if (what.rfind("mood:", 0) == 0) {
-				// an OBSPETS Chat shows the line first, so there's a real one to yank
-				std::string id;
-				bool automod = what == "mood:automod";
-				std::string user = automod ? "v1ewb0t_4u" : "inkwell",
-					    text = automod ? "best viewers and followers on streamboost dot shop" : "this pet is overrated";
-				if (what == "mood:yank" || automod)
-					with_chat(p, [&](ChatSource &c) {
-						id = c.add_test_line(user, text, "#1E90FF");
-						if (automod)
-							c.strike(id);   // (as if Auto mod deleted it: nothing is deleted for real)
-					});
-				p.has_mood = true;
-				p.next_mood = MoodReq{automod ? "yank" : what.substr(5), p.now, user, "#a6c1db", text, id, 0.35, 0.93, automod, true};
 			} else {
 				auto c = what.find(':');
 				p.has_alert = true;
@@ -1207,18 +1246,192 @@ void PetSource::test(const std::string &what, const std::string &pack_id)
 	});
 }
 
-// ------------------------------------------------------------------ properties
-
-static obs_properties_t *group(obs_properties_t *p, const char *id, const char *title)
+// A chat mood acted out as a test (on the pet thread). A yank needs a line to rip out, so an
+// OBSPETS Chat shows `text` first; `automod`: as if Auto mod deleted it (nothing is deleted for real).
+void PetSource::act_out(Pet &p, const std::string &kind, const std::string &user, const std::string &text, bool automod)
 {
-	obs_properties_t *g = obs_properties_create();
-	obs_properties_add_group(p, id, title, OBS_GROUP_NORMAL, g);
-	return g;
+	std::string id;
+	if (kind == "yank")
+		with_chat(p, [&](ChatSource &c) {
+			id = c.add_test_line(user, text, "#1E90FF");
+			if (automod)
+				c.strike(id);
+		});
+	p.has_mood = true;
+	p.next_mood = MoodReq{kind, p.now, user, "#a6c1db", text, id, 0.35, 0.93, automod, true};
 }
 
-static std::string who(const std::string &pet) { return pet.empty() ? std::string("the pet") : pet; }
+// The settings page's chat tester: play what the AI picked for a line the streamer typed.
+void PetSource::try_mood(const std::string &kind, const std::string &user, const std::string &text, bool automod)
+{
+	post([kind, user, text, automod](PetSource &o) {
+		if (Pet *p = o.pick(kind))
+			o.act_out(*p, kind, user, text, automod);
+	});
+}
 
-// The top of the window: whether it's signed in, and what to do next.
+// ------------------------------------------------------------------ shared helpers
+
+PetSource *PetSource::from(obs_source_t *s)
+{
+	const char *id = s ? obs_source_get_unversioned_id(s) : nullptr;
+	if (!id || strcmp(id, PET_SOURCE_ID) != 0)
+		return nullptr;
+	return static_cast<PetSource *>(obs_obj_get_data(s));
+}
+
+static std::string who(const std::string &pet) { return pet.empty() ? std::string("your pet") : pet; }
+
+std::string pet_name_now(PetSource *pet, obs_data_t *s)
+{
+	std::string nm = trim(str(s, "name"));
+	if (nm.empty() && pet) {
+		std::lock_guard<std::mutex> g(pet->mu_);
+		nm = pet->ui.name;
+	}
+	return nm;
+}
+
+std::string pet_reward_now(PetSource *pet, obs_data_t *s)
+{
+	return trim(fill_name(str(s, "reward"), pet_name_now(pet, s)));
+}
+
+static std::string pack_label(const std::string &id)
+{
+	std::string s = id;
+	std::replace(s.begin(), s.end(), '_', ' ');
+	std::replace(s.begin(), s.end(), '-', ' ');
+	if (!s.empty())
+		s[0] = (char)toupper((unsigned char)s[0]);
+	return s;
+}
+
+std::string pet_pack_name(const std::string &id)
+{
+	for (auto &pk : list_packs())
+		if (pk.id == id) {
+			std::string err;
+			if (auto P = load_pack(pk.path, err))
+				return P->name;
+			break;
+		}
+	return pack_label(id);
+}
+
+ChatKind pet_chat_kind(PetSource *pet, obs_data_t *s, std::string &name)
+{
+	std::string pick = trim(str(s, "perch"));
+	if (pet) {
+		std::lock_guard<std::mutex> g(pet->mu_);
+		name = pick.empty() ? pet->ui.auto_chat : pick;
+	} else {
+		name = pick;
+	}
+	if (pick == NO_SOURCE || name.empty()) {
+		name.clear();
+		return ChatKind::None;
+	}
+	obs_source_t *src = obs_get_source_by_name(name.c_str());
+	if (!src)
+		return ChatKind::None;
+	ChatKind k = ChatSource::from(src) ? ChatKind::Ours : ChatKind::Other;
+	obs_source_release(src);
+	return k;
+}
+
+// UI thread: creates an OBSPETS Chat in the current scene (bottom left, under `pet` if given) and
+// picks it as `pet`'s chat source. Returns the new source's name, or "" if no scene was available.
+std::string add_chat_for_pet(PetSource *pet)
+{
+	bool studio = obs_frontend_preview_program_mode_active();
+	obs_source_t *scene_src = studio ? obs_frontend_get_current_preview_scene() : obs_frontend_get_current_scene();
+	obs_scene_t *scene = obs_scene_from_source(scene_src);
+	if (!scene) {
+		obs_source_release(scene_src);
+		return "";
+	}
+	std::string name = "OBSPETS Chat";
+	for (int i = 2;; i++) {
+		obs_source_t *e = obs_get_source_by_name(name.c_str());
+		if (!e)
+			break;
+		obs_source_release(e);
+		name = "OBSPETS Chat " + std::to_string(i);
+	}
+	obs_source_t *chat = obs_source_create(CHAT_SOURCE_ID, name.c_str(), nullptr, nullptr);
+	if (chat) {
+		obs_sceneitem_t *item = obs_scene_add(scene, chat);
+		if (item) {
+			obs_video_info ovi;
+			double H = obs_get_video_info(&ovi) ? ovi.base_height : 1080;
+			double floor_px = pet && pet->lead_ ? pet->lead_->floor_px : 24.0;
+			vec2 pos;
+			vec2_set(&pos, 24.0f, (float)std::max(0.0, H - obs_source_get_height(chat) - 24 - floor_px));
+			obs_sceneitem_set_pos(item, &pos);
+			if (pet)
+				if (obs_sceneitem_t *mine = obs_scene_find_source(scene, obs_source_get_name(pet->source)))
+					obs_sceneitem_set_order_position(item, obs_sceneitem_get_order_position(mine));
+		}
+		obs_source_release(chat);
+		if (pet) {
+			Data u = data_new();
+			obs_data_set_string(u.get(), "perch", name.c_str());
+			obs_source_update(pet->source, u.get());
+		}
+	} else {
+		name.clear();
+	}
+	obs_source_release(scene_src);
+	return name;
+}
+
+// UI thread: finds an existing OBSPETS source or creates one, adds it to the current scene, returns its name.
+std::string add_pet_to_scene()
+{
+	bool studio = obs_frontend_preview_program_mode_active();
+	obs_source_t *scene_src = studio ? obs_frontend_get_current_preview_scene() : obs_frontend_get_current_scene();
+	obs_scene_t *scene = obs_scene_from_source(scene_src);
+	if (!scene) {
+		obs_source_release(scene_src);
+		return "";
+	}
+	obs_source_t *pet = nullptr;
+	obs_enum_sources(
+		[](void *p, obs_source_t *s) {
+			const char *id = obs_source_get_unversioned_id(s);
+			if (id && strcmp(id, PET_SOURCE_ID) == 0) {
+				*static_cast<obs_source_t **>(p) = obs_source_get_ref(s);
+				return false;
+			}
+			return true;
+		},
+		&pet);
+	if (!pet) {
+		std::string name = "OBSPETS";
+		for (int i = 2;; i++) {
+			obs_source_t *e = obs_get_source_by_name(name.c_str());
+			if (!e)
+				break;
+			obs_source_release(e);
+			name = "OBSPETS " + std::to_string(i);
+		}
+		pet = obs_source_create(PET_SOURCE_ID, name.c_str(), nullptr, nullptr);
+	}
+	std::string out;
+	if (pet) {
+		out = obs_source_get_name(pet);
+		if (!obs_scene_find_source_recursive(scene, out.c_str()))
+			obs_scene_add(scene, pet);
+		obs_source_release(pet);
+	}
+	obs_source_release(scene_src);
+	return out;
+}
+
+// ------------------------------------------------------------------ properties (minimal)
+
+// Concise account summary for the top of an OBSPETS source's properties dialog.
 static std::string account_text(const HubStatus &st, const std::string &pet)
 {
 	std::string s;
@@ -1239,529 +1452,31 @@ static std::string account_text(const HubStatus &st, const std::string &pet)
 			s += "Kick as " + st.kick_login;
 		s += ". ";
 		bool live = (!tw || st.twitch_live) && (!kk || st.kick_live);
-		// (Kick doesn't say when someone follows)
 		s += !live ? "Connecting to your channel\xE2\x80\xA6"
 		     : tw   ? "Reacting to your follows, subs, gifts, raids, channel points and chat."
 			    : "Reacting to your subs, gifts, Kicks, hosts, channel points and chat.";
 		if (!st.moods_server_on)
-			s += "\nReactions to chat are turned off. To turn them on, click \"Chat reactions and limits\" below.";
+			s += "\nChat reactions are turned off in the OBSPETS settings (Reactions & AI).";
 		if (!st.mood_note.empty())
 			s += "\n" + st.mood_note;
 	} else if (st.signed_in) {
 		s = "Signed in, but with neither Twitch nor Kick any more. Sign in with one so " + who(pet) + " reacts to your channel.";
 	} else {
 		s = "Sign in with Twitch, Kick or both so " + who(pet) +
-		    " reacts to follows, subs, gifts, raids, channel points and chat. Without signing in, it still walks about, naps and sits on your chat.";
+		    " reacts to follows, subs, gifts, raids, channel points and chat.";
 	}
 	if (!st.message.empty())
 		s += "\n\n" + st.message;
 	return s;
 }
 
-static std::string pet_name_now(PetSource *pet, obs_data_t *s)
+void add_account_properties(obs_properties_t *p, const std::string &pet_name, const std::string &prefix)
 {
-	std::string nm = trim(str(s, "name"));
-	if (nm.empty()) {
-		std::lock_guard<std::mutex> g(pet->mu_);
-		nm = pet->ui.name;
-	}
-	return nm;
-}
-
-// The channel-point reward as it would be made right now: the reward text with {name} filled in.
-static std::string reward_now(PetSource *pet, obs_data_t *s)
-{
-	return trim(fill_name(str(s, "reward"), pet_name_now(pet, s)));
-}
-
-// The reward line and button say which reward and whether it's there (on each platform it's signed
-// in with), and keep up as the name or the reward text change. The fields with {name} say what it
-// stands for.
-static void reward_text(PetSource *pet, obs_properties_t *p, obs_data_t *s)
-{
-	std::string r = reward_now(pet, s), nm = pet_name_now(pet, s);
 	HubStatus st = Hub::get().status();
-	struct On {
-		bool kick;
-		Reward state;
-		std::string msg;
-	};
-	std::vector<On> on;
-	if (!st.login.empty())
-		on.push_back({false, st.reward_title == r ? st.reward : Reward::Unknown, st.reward_msg});
-	if (!st.kick_login.empty())
-		on.push_back({true, st.reward_title == r ? st.kick_reward : Reward::Unknown, st.kick_reward_msg});
-	std::string line, button;
-	if (r.empty()) {
-		line = "No channel-point reward: its title under \"What it reacts to\" is empty.";
-	} else {
-		bool missing = false, failed = false;
-		for (auto &o : on) {
-			std::string l;
-			switch (o.state) {
-			case Reward::There:
-				l = "\xE2\x9C\x93 Viewers can pet " + who(nm) + " with your channel-point reward \"" + r + "\".";
-				break;
-			case Reward::Made:
-				l = "\xE2\x9C\x93 Made the channel-point reward \"" + r + "\" (100 points). To change its cost" +
-				    (o.kick ? ", go to your channel points on Kick's dashboard."
-					    : " or picture, go to Twitch: Creator Dashboard, Viewer Rewards, Channel Points.") +
-				    " Keep its title.";
-				break;
-			case Reward::NotAllowed:
-				l = o.kick ? "Kick doesn't let this channel have channel-point rewards yet. Everything else works."
-					   : "Channel points need Twitch Affiliate or Partner, so there's no reward to make yet. Everything else works.";
-				break;
-			case Reward::Checking:
-				l = "Checking your channel-point rewards\xE2\x80\xA6";
-				break;
-			case Reward::Failed:
-				l = "Couldn't make the reward \"" + r + "\". " + o.msg;
-				failed = true;
-				break;
-			default:
-				l = "No \"" + r + "\" reward yet.";
-				missing = true;
-			}
-			line += (line.empty() ? "" : "\n") + (on.size() > 1 ? std::string(o.kick ? "Kick: " : "Twitch: ") : "") + l;
-		}
-		if (missing && on.size() == 1)
-			line = "Let viewers pet " + who(nm) + " with channel points. This makes a reward called \"" + r + "\" on your channel.";
-		if (missing)
-			button = "Make the \"" + r + "\" reward";
-		else if (failed)
-			button = "Try again";
-	}
-	if (obs_property_t *t = obs_properties_get(p, "reward_status"))
-		obs_property_set_description(t, line.c_str());
-	if (obs_property_t *b = obs_properties_get(p, "make_reward")) {
-		obs_property_set_description(b, button.c_str());
-		obs_property_set_visible(b, !button.empty());
-	}
-	if (obs_property_t *f = obs_properties_get(p, "reward"))
-		obs_property_set_description(f, ("Channel-point reward title ({name} = " + who(nm) + ")").c_str());
-	if (obs_property_t *f = obs_properties_get(p, "label_after"))
-		obs_property_set_description(f, ("Text after the viewer's name ({name} = " + who(nm) + ")").c_str());
-}
+	std::string head = prefix.empty() ? account_text(st, pet_name) : prefix + "\n\n" + account_text(st, pet_name);
+	obs_properties_add_text(p, "account", head.c_str(), OBS_TEXT_INFO);
 
-static bool on_name(void *d, obs_properties_t *p, obs_property_t *, obs_data_t *s)
-{
-	reward_text(static_cast<PetSource *>(d), p, s);
-	return true;
-}
-
-// The character list shows names, not folder names: "blob" -> "Blob".
-static std::string pack_label(const std::string &id)
-{
-	std::string s = id;
-	std::replace(s.begin(), s.end(), '_', ' ');
-	std::replace(s.begin(), s.end(), '-', ' ');
-	if (!s.empty())
-		s[0] = (char)toupper((unsigned char)s[0]);
-	return s;
-}
-
-// A new character: a pet still called after the old one takes the new one's name.
-static bool on_pack(void *d, obs_properties_t *p, obs_property_t *, obs_data_t *s)
-{
-	auto *pet = static_cast<PetSource *>(d);
-	std::string old_name, cur_id;
-	{
-		std::lock_guard<std::mutex> g(pet->mu_);
-		old_name = pet->ui.pack ? pet->ui.pack->name : "";
-		cur_id = pet->ui.pack ? pet->ui.pack->id : "";
-	}
-	// OBS runs this on every rebuild of the properties too (a button, a status change), not only
-	// when a character is picked. So only a pick of a character other than the one in use counts,
-	// and never while a folder ("Or use a character folder") overrides the list: otherwise a rebuild
-	// renamed the pet after whatever the list happened to say.
-	if (!trim(str(s, "pack_dir")).empty())
-		return false;
-	std::string nm = trim(str(s, "name")), id = str(s, "pack");
-	if (id.empty() || id == cur_id || !(nm.empty() || nm == old_name))
-		return false;
-	std::string want = pack_label(id);
-	for (auto &pk : list_packs())
-		if (pk.id == id) {
-			std::string err;
-			if (auto P = load_pack(pk.path, err))
-				want = P->name;
-			break;
-		}
-	if (want == nm)
-		return false;
-	obs_data_set_string(s, "name", want.c_str());
-	reward_text(pet, p, s);
-	return true;
-}
-
-// Every source with a picture, for the chat, alert and keep-off pickers (not the pet itself).
-static std::vector<std::string> picture_sources(obs_source_t *self)
-{
-	struct Ctx {
-		obs_source_t *self;
-		std::vector<std::string> names;
-	} ctx{self, {}};
-	obs_enum_sources(
-		[](void *p, obs_source_t *s) {
-			auto *c = static_cast<Ctx *>(p);
-			const char *n = obs_source_get_name(s);
-			if (s != c->self && n && *n && (obs_source_get_output_flags(s) & OBS_SOURCE_VIDEO))
-				c->names.push_back(n);
-			return true;
-		},
-		&ctx);
-	std::sort(ctx.names.begin(), ctx.names.end(), [](const std::string &a, const std::string &b) { return lower(a) < lower(b); });
-	return ctx.names;
-}
-
-// A source picker: "find it by itself" (saying what it found), every source, and "none".
-static void source_list(obs_properties_t *g, const char *key, const char *label, const std::vector<std::string> &names,
-			const std::string &cur, const std::string &found, const char *word)
-{
-	obs_property_t *l = obs_properties_add_list(g, key, label, OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
-	std::string a = found.empty() ? std::string("Find it by itself (a source with \"") + word + "\" in its name)"
-				      : "Find it by itself (found: " + found + ")";
-	obs_property_list_add_string(l, a.c_str(), "");
-	bool listed = cur.empty() || cur == NO_SOURCE;
-	for (auto &n : names) {
-		obs_property_list_add_string(l, n.c_str(), n.c_str());
-		listed = listed || n == cur;
-	}
-	if (!listed)
-		obs_property_list_add_string(l, (cur + " (not found)").c_str(), cur.c_str());
-	obs_property_list_add_string(l, "None", NO_SOURCE);
-}
-
-// Picking a source under "Keep it off" adds it to the list below.
-static bool on_avoid_add(obs_properties_t *p, obs_property_t *, obs_data_t *s)
-{
-	std::string n = str(s, "avoid_add");
-	if (n.empty())
-		return false;
-	if (obs_property_t *l = obs_properties_get(p, "avoid_list"))
-		obs_property_set_visible(l, true);
-	auto have = avoid_list(s);
-	if (std::find(have.begin(), have.end(), n) == have.end()) {
-		obs_data_array_t *arr = obs_data_get_array(s, "avoid_list");
-		if (!arr)
-			arr = obs_data_array_create();
-		Data it = data_new();
-		obs_data_set_string(it.get(), "value", n.c_str());
-		obs_data_array_push_back(arr, it.get());
-		obs_data_set_array(s, "avoid_list", arr);
-		obs_data_array_release(arr);
-	}
-	obs_data_set_string(s, "avoid_add", "");
-	return true;
-}
-
-// ------------------------------------------------------------------ the chat it uses
-
-// Which chat the properties are about right now: the one picked, or what "find it by itself" found.
-static ChatKind ui_chat(PetSource *pet, obs_data_t *s, std::string &name)
-{
-	std::string pick = trim(str(s, "perch"));
-	{
-		std::lock_guard<std::mutex> g(pet->mu_);
-		name = pick.empty() ? pet->ui.auto_chat : pick;
-	}
-	if (pick == NO_SOURCE || name.empty()) {
-		name.clear();
-		return ChatKind::None;
-	}
-	obs_source_t *src = obs_get_source_by_name(name.c_str());
-	if (!src)
-		return ChatKind::None;
-	ChatKind k = ChatSource::from(src) ? ChatKind::Ours : ChatKind::Other;
-	obs_source_release(src);
-	return k;
-}
-
-// The line under "Your chat": what it does with this chat, and what would make it better.
-static void chat_text(PetSource *pet, obs_properties_t *p, obs_data_t *s)
-{
-	std::string name, pet_name = who(pet_name_now(pet, s));
-	ChatKind k = ui_chat(pet, s, name);
-	bool picked_none = trim(str(s, "perch")) == NO_SOURCE;
-	std::string t;
-	switch (k) {
-	case ChatKind::Ours:
-		t = "\xE2\x9C\x93 \"" + name + "\" is an OBSPETS Chat: " + pet_name +
-		    " sits on the newest message, gets bumped up by new ones, and rips real messages right out of it.";
-		break;
-	case ChatKind::Other:
-		t = "\"" + name + "\" isn't an OBSPETS Chat, so " + pet_name +
-		    " just walks around it. You can let it sit on this chat and rip messages out of it below, but both "
-		    "work much better with an OBSPETS Chat, which has the usual chat overlay options too (fonts, colors, "
-		    "badges, 7TV/BTTV/FFZ emotes, filters, custom CSS).";
-		break;
-	default:
-		t = picked_none ? "No chat: " + pet_name + " walks along the bottom and ignores chat on screen."
-				: "No chat found in this scene. Add an OBSPETS Chat (button below) and " + pet_name +
-					  " sits on its messages and rips them out. Or pick your own chat above.";
-	}
-	t += "\nAuto mod works with any chat: the message is deleted on Twitch or Kick the moment it's caught, so every chat "
-	     "overlay drops it, and the pet flings it crossed out.";
-	if (obs_property_t *i = obs_properties_get(p, "chat_info"))
-		obs_property_set_description(i, t.c_str());
-	bool other = k == ChatKind::Other;
-	if (obs_property_t *b = obs_properties_get(p, "perch_box"))
-		obs_property_set_visible(b, other);
-	if (obs_property_t *b = obs_properties_get(p, "other_yank"))
-		obs_property_set_visible(b, other);
-	if (obs_property_t *v = obs_properties_get(p, "visit"))
-		obs_property_set_visible(v, k == ChatKind::Ours || (other && obs_data_get_bool(s, "perch_box")));
-	if (obs_property_t *b = obs_properties_get(p, "add_chat"))
-		obs_property_set_visible(b, k != ChatKind::Ours);
-	if (obs_property_t *b = obs_properties_get(p, "add_chat_note"))
-		obs_property_set_visible(b, k == ChatKind::Other);
-}
-
-static bool on_chat(void *d, obs_properties_t *p, obs_property_t *, obs_data_t *s)
-{
-	chat_text(static_cast<PetSource *>(d), p, s);
-	return true;
-}
-
-// "Add an OBSPETS Chat to this scene": bottom left, just under the pet, and picked as its chat.
-static bool add_chat(obs_properties_t *p, obs_property_t *, void *d)
-{
-	auto *pet = static_cast<PetSource *>(d);
-	obs_source_t *scene_src = obs_frontend_get_current_scene();
-	obs_scene_t *scene = obs_scene_from_source(scene_src);
-	if (!scene) {
-		obs_source_release(scene_src);
-		return false;
-	}
-	std::string name = "OBSPETS Chat";
-	for (int i = 2;; i++) {
-		obs_source_t *e = obs_get_source_by_name(name.c_str());
-		if (!e)
-			break;
-		obs_source_release(e);
-		name = "OBSPETS Chat " + std::to_string(i);
-	}
-	obs_source_t *chat = obs_source_create(CHAT_SOURCE_ID, name.c_str(), nullptr, nullptr);
-	if (chat) {
-		obs_sceneitem_t *item = obs_scene_add(scene, chat);
-		if (item) {
-			obs_video_info ovi;
-			double H = obs_get_video_info(&ovi) ? ovi.base_height : 1080;
-			vec2 pos;
-			vec2_set(&pos, 24.0f, (float)std::max(0.0, H - obs_source_get_height(chat) - 24 - pet->lead_->floor_px));
-			obs_sceneitem_set_pos(item, &pos);
-			if (obs_sceneitem_t *mine = obs_scene_find_source(scene, obs_source_get_name(pet->source)))
-				obs_sceneitem_set_order_position(item, obs_sceneitem_get_order_position(mine));
-		}
-		obs_source_release(chat);
-		Data s(obs_source_get_settings(pet->source));
-		obs_data_set_string(s.get(), "perch", name.c_str());
-		obs_source_update(pet->source, s.get());
-		chat_text(pet, p, s.get());
-	}
-	obs_source_release(scene_src);
-	return true;
-}
-
-// The properties window: the few things most people touch, then "Show all settings" for the rest
-// (hidden until ticked, so the window stays short).
-// ---- more pets
-
-// Each pet's "Reactions" list: picking one turns it on or off for that pet, and the list goes back
-// to saying what's off.
-static const char *const CHECK = "\xE2\x9C\x93  ", *const CROSS = "\xE2\x9C\x97  ";
-
-static std::string short_label(const char *label)
-{
-	std::string l = strncmp(label, "Chat: ", 6) == 0 ? label + 6 : label;
-	return lower(l);
-}
-
-static void fill_reacts(obs_property_t *l, obs_data_t *s, int slot)
-{
-	obs_property_list_clear(l);
-	std::string off;
-	int n = 0;
-	for (auto &r : REACTS)
-		if (!obs_data_get_bool(s, do_key(r.id, slot).c_str()) && n++ < 3)
-			off += (n > 1 ? ", " : "") + short_label(r.label);
-	if (n > 3)
-		off += " and " + std::to_string(n - 3) + " more";
-	obs_property_list_add_string(l, n ? ("Off: " + off).c_str() : "All on", "");
-	for (auto &r : REACTS)
-		obs_property_list_add_string(l, ((obs_data_get_bool(s, do_key(r.id, slot).c_str()) ? CHECK : CROSS) + std::string(r.label)).c_str(),
-					     r.id);
-}
-
-static bool on_reacts(obs_properties_t *, obs_property_t *l, obs_data_t *s)
-{
-	std::string key = obs_property_name(l);   // "reacts", "reacts2", ...
-	int slot = key.size() > 6 ? std::stoi(key.substr(6)) - 1 : 0;
-	std::string id = str(s, key.c_str());
-	if (id.empty())
-		return false;
-	std::string k = do_key(id.c_str(), slot);
-	obs_data_set_bool(s, k.c_str(), !obs_data_get_bool(s, k.c_str()));
-	obs_data_set_string(s, key.c_str(), "");
-	fill_reacts(l, s, slot);
-	return true;
-}
-
-static obs_property_t *add_reacts(obs_properties_t *g, obs_data_t *s, int slot, const char *label)
-{
-	obs_property_t *l = obs_properties_add_list(g, slot_key("reacts", slot).c_str(), label, OBS_COMBO_TYPE_LIST,
-						    OBS_COMBO_FORMAT_STRING);
-	obs_property_set_long_description(l, "Pick one to turn it on or off for this pet. Another pet on screen does it instead.");
-	fill_reacts(l, s, slot);
-	obs_property_set_modified_callback(l, on_reacts);
-	return l;
-}
-
-// Shows what the pet count and the rules make matter: each pet's settings, the swap settings
-// when fewer fit on screen than there are, and the chances when something is picked at random.
-static bool pets_ui(obs_properties_t *p, obs_property_t *, obs_data_t *s)
-{
-	while (obs_properties_t *up = obs_properties_get_parent(p))
-		p = up;
-	int n = (int)std::clamp<long long>(obs_data_get_int(s, "pets"), 1, MAX_PETS);
-	int on = (int)std::clamp<long long>(obs_data_get_int(s, "at_once"), 1, MAX_PETS);
-	bool more = n > 1, swaps = more && on < n;
-	bool chance = more && (str(s, "who") != "turns" || (swaps && str(s, "next_in") == "random"));
-	auto show = [&](const std::string &id, bool v) {
-		if (obs_property_t *q = obs_properties_get(p, id.c_str()))
-			obs_property_set_visible(q, v);
-	};
-	for (int i = 1; i < MAX_PETS; i++)
-		show("g_pet" + std::to_string(i + 1), i < n);
-	for (int i = 0; i < MAX_PETS; i++)
-		show(slot_key("weight", i), chance && i < n);
-	show("who", more);
-	show("at_once", more);
-	show("swap_min", swaps);
-	show("swap_alert", swaps);
-	show("next_in", swaps);
-	if (obs_property_t *q = obs_properties_get(p, "at_once"))
-		obs_property_int_set_limits(q, 1, std::max(1, n), 1);
-	if (obs_property_t *q = obs_properties_get(p, "reacts"))
-		obs_property_set_description(q, more ? "Pet 1's reactions" : "Reactions");
-	return true;
-}
-
-static void add_pets(obs_properties_t *p, obs_data_t *s)
-{
-	obs_properties_t *g = obs_properties_create();
-	obs_property_t *np = obs_properties_add_int_slider(g, "pets", "How many", 1, MAX_PETS, 1);
-	obs_property_set_modified_callback(np, pets_ui);
-	obs_property_t *w = obs_properties_add_list(g, "who", "Who reacts", OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
-	obs_property_list_add_string(w, "Take turns", "turns");
-	obs_property_list_add_string(w, "Random (by chance)", "random");
-	obs_property_list_add_string(w, "All of them", "all");
-	obs_property_set_long_description(w, "To alerts and channel points. Chat reactions are one pet at a time.");
-	obs_property_set_modified_callback(w, pets_ui);
-	obs_property_t *ao = obs_properties_add_int_slider(g, "at_once", "On screen at once", 1, MAX_PETS, 1);
-	obs_property_set_long_description(ao, "Fewer than all of them: they swap. One jumps off screen and the next jumps on.");
-	obs_property_set_modified_callback(ao, pets_ui);
-	obs_property_t *sm = obs_properties_add_int_slider(g, "swap_min", "Swap every", 0, 60, 1);
-	obs_property_int_set_suffix(sm, " min");
-	obs_property_set_long_description(sm, "0: never.");
-	obs_property_t *sa = obs_properties_add_bool(g, "swap_alert", "Swap after an alert");
-	obs_property_set_long_description(sa, "The pet that reacted leaves when it's done.");
-	obs_property_t *ni = obs_properties_add_list(g, "next_in", "Who comes on", OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
-	obs_property_list_add_string(ni, "Next in line", "turns");
-	obs_property_list_add_string(ni, "Random (by chance)", "random");
-	obs_property_set_modified_callback(ni, pets_ui);
-	obs_property_t *w1 = obs_properties_add_int_slider(g, "weight", "Pet 1's chance", 0, 10, 1);
-	obs_property_set_long_description(w1, "Higher is picked more often. 0: never.");
-	add_reacts(g, s, 0, "Pet 1's reactions");
-	obs_properties_add_group(p, "g_pets", "Pets", OBS_GROUP_NORMAL, g);
-
-	auto packs = list_packs();
-	for (int i = 1; i < MAX_PETS; i++) {
-		obs_properties_t *gi = obs_properties_create();
-		obs_property_t *l = obs_properties_add_list(gi, slot_key("pack", i).c_str(), "Character", OBS_COMBO_TYPE_LIST,
-							     OBS_COMBO_FORMAT_STRING);
-		std::set<std::string> listed;
-		for (auto &pk : packs)
-			if (listed.insert(pk.id).second)
-				obs_property_list_add_string(l, pack_label(pk.id).c_str(), pk.id.c_str());
-		obs_property_t *nm = obs_properties_add_text(gi, slot_key("name", i).c_str(), "Name", OBS_TEXT_DEFAULT);
-		obs_property_set_long_description(nm, "Empty: the character's name.");
-		obs_properties_add_int_slider(gi, slot_key("scale", i).c_str(), "Size", 1, 12, 1);
-		obs_property_t *wi = obs_properties_add_int_slider(gi, slot_key("weight", i).c_str(), "Chance", 0, 10, 1);
-		obs_property_set_long_description(wi, "Higher is picked more often. 0: never.");
-		add_reacts(gi, s, i, "Reactions");
-		std::string id = "g_pet" + std::to_string(i + 1), title = "Pet " + std::to_string(i + 1);
-		obs_properties_add_group(p, id.c_str(), title.c_str(), OBS_GROUP_NORMAL, gi);
-	}
-}
-
-static const char *ADVANCED_GROUPS[] = {"g_try", "g_scene", "g_react", "g_moods", "g_mood", "g_label", "g_char"};
-
-static bool show_advanced(obs_properties_t *p, obs_property_t *, obs_data_t *s)
-{
-	bool on = obs_data_get_bool(s, "advanced");
-	for (const char *id : ADVANCED_GROUPS)
-		if (obs_property_t *g = obs_properties_get(p, id))
-			obs_property_set_visible(g, on);
-	return true;
-}
-
-// The Character list is grayed out while a folder ("Or use a character folder") is set, as the
-// folder is what's used then. `p` may be any group of the properties.
-static void pack_list_state(obs_properties_t *p, obs_data_t *s)
-{
-	while (obs_properties_t *up = obs_properties_get_parent(p))
-		p = up;
-	obs_property_t *list = obs_properties_get(p, "pack");
-	if (!list)
-		return;
-	bool folder = !trim(str(s, "pack_dir")).empty();
-	obs_property_set_description(list, folder ? "Character (not used)" : "Character");
-	obs_property_set_enabled(list, !folder);
-	obs_property_set_long_description(list, folder ? "A character folder is set under \"Your own characters\" (Show all settings), "
-							 "so that one is used. Clear that folder to pick from this list."
-						       : nullptr);
-}
-
-obs_properties_t *PetSource::properties()
-{
-	obs_properties_t *p = obs_properties_create();
-	HubStatus st = Hub::get().status();
-	Data s(obs_source_get_settings(source));
-	std::string nm = pet_name_now(this, s.get());
-	PackPtr P;
-	std::string pack_err, found_chat, found_alert;
-	bool box_moved;
-	{
-		std::lock_guard<std::mutex> g(mu_);
-		P = ui.pack;
-		pack_err = ui.pack_err;
-		found_chat = ui.auto_chat;
-		found_alert = ui.auto_alert;
-		box_moved = ui.moved;
-	}
-
-	// ---- signing in
-	obs_properties_add_text(p, "account", account_text(st, nm).c_str(), OBS_TEXT_INFO);
 	bool tw = !st.login.empty(), kk = !st.kick_login.empty();
-	if (st.signed_in && (tw || kk) && !st.linking) {
-		// the channel-point reward: whether it's there, and a button to make it
-		obs_properties_add_text(p, "reward_status", "", OBS_TEXT_INFO);
-		obs_properties_add_button(p, "make_reward", "", [](obs_properties_t *, obs_property_t *, void *d) {
-			auto *pet = static_cast<PetSource *>(d);
-			Data s(obs_source_get_settings(pet->source));
-			Hub::get().ensure_reward(reward_now(pet, s.get()));
-			return false;
-		});
-		Hub::get().check_reward(reward_now(this, s.get()));
-		obs_properties_add_button(p, "page", "Chat reactions and limits (opens sindruid.com)",
-					  [](obs_properties_t *, obs_property_t *, void *) {
-						  open_url(Hub::backend() + "/streamtools/obspets");
-						  return false;
-					  });
-	}
-	// a sign-in from before a feature needed more of the channel: signing in again turns it on
 	auto again = [&](const char *id, const std::string &missing, const char *pf, const char *label) {
 		if (missing.empty() || st.linking)
 			return;
@@ -1776,17 +1491,17 @@ obs_properties_t *PetSource::properties()
 		again("again_twitch", st.twitch_missing, "Twitch", "Sign in with Twitch again");
 	if (kk)
 		again("again_kick", st.kick_missing, "Kick", "Sign in with Kick again");
+
 	if (st.linking) {
-		obs_properties_add_button(p, "sign_in_page", "Open the page again", [](obs_properties_t *, obs_property_t *, void *) {
+		obs_properties_add_button(p, "sign_in_page", "Open the sign-in page again", [](obs_properties_t *, obs_property_t *, void *) {
 			Hub::get().open_sign_in_page();
 			return false;
 		});
-		obs_properties_add_button(p, "sign_in_cancel", "Cancel", [](obs_properties_t *, obs_property_t *, void *) {
+		obs_properties_add_button(p, "sign_in_cancel", "Cancel sign-in", [](obs_properties_t *, obs_property_t *, void *) {
 			Hub::get().cancel_sign_in();
 			return false;
 		});
 	} else {
-		// one button per platform it isn't signed in with: either signs in, or adds that one to the account
 		bool any = st.signed_in && (tw || kk);
 		if (!tw)
 			obs_properties_add_button(p, "sign_in", any ? "Also sign in with Twitch" : "Sign in with Twitch",
@@ -1800,7 +1515,6 @@ obs_properties_t *PetSource::properties()
 							  Hub::get().sign_in("kick");
 							  return false;
 						  });
-		// (signing out ends this OBS's sign-in, so every platform it's signed in with: say which)
 		const char *out = tw && kk ? "Sign out of Twitch and Kick" : tw ? "Sign out of Twitch" : kk ? "Sign out of Kick" : "Sign out";
 		if (st.signed_in)
 			obs_properties_add_button(p, "sign_out", out, [](obs_properties_t *, obs_property_t *, void *) {
@@ -1808,16 +1522,35 @@ obs_properties_t *PetSource::properties()
 				return false;
 			});
 	}
+}
 
-	// ---- the short list
-	obs_property_t *list = obs_properties_add_list(p, "pack", "Character", OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
-	std::set<std::string> listed;
-	for (auto &pk : list_packs())
-		if (listed.insert(pk.id).second)
-			obs_property_list_add_string(list, pack_label(pk.id).c_str(), pk.id.c_str());
-	obs_property_set_modified_callback2(list, on_pack, this);
-	pack_list_state(p, s.get());
-	obs_property_t *ed = obs_properties_add_button(p, "edit_pack", "Open pet editor", [](obs_properties_t *, obs_property_t *, void *d) {
+obs_properties_t *PetSource::properties()
+{
+	obs_properties_t *p = obs_properties_create();
+	Data s(obs_source_get_settings(source));
+	std::string nm = pet_name_now(this, s.get());
+	PackPtr P;
+	std::string pack_err;
+	{
+		std::lock_guard<std::mutex> g(mu_);
+		P = ui.pack;
+		pack_err = ui.pack_err;
+	}
+
+	std::string prefix;
+	if (!P)
+		prefix = "Character didn't load: " + (pack_err.empty() ? std::string("open Settings to pick one.") : pack_err);
+	add_account_properties(p, nm, prefix);
+
+	obs_property_t *open_set = obs_properties_add_button(p, "open_settings", "Open settings", [](obs_properties_t *, obs_property_t *, void *d) {
+		auto *pet = static_cast<PetSource *>(d);
+		const char *name = obs_source_get_name(pet->source);
+		open_settings("pet", name ? name : "");
+		return false;
+	});
+	obs_property_set_long_description(open_set, "Opens OBSPETS Settings in your browser. All changes save automatically.");
+
+	obs_property_t *ed = obs_properties_add_button(p, "open_editor", "Open pet editor", [](obs_properties_t *, obs_property_t *, void *d) {
 		auto *pet = static_cast<PetSource *>(d);
 		std::string id;
 		{
@@ -1827,145 +1560,8 @@ obs_properties_t *PetSource::properties()
 		open_editor(id);
 		return false;
 	});
-	obs_property_set_long_description(ed, "Opens the pet editor in your browser. Drop in animations and sounds one at a time; "
-					      "the pet here updates as you go.");
-	if (!P)   // a character that didn't load says why right here
-		obs_properties_add_text(p, "pack_problem",
-					("This character didn't load: " + (pack_err.empty() ? std::string("pick another one above.") : pack_err)).c_str(),
-					OBS_TEXT_INFO);
-	obs_property_t *name_prop = obs_properties_add_text(p, "name", "Name", OBS_TEXT_DEFAULT);
-	obs_property_set_long_description(name_prop, "What it's called on stream: in its name label and its channel-point reward.");
-	obs_property_set_modified_callback2(name_prop, on_name, this);
-	obs_property_t *sz = obs_properties_add_int_slider(p, "scale", "Size", 1, 12, 1);
-	obs_property_set_long_description(sz, "How big it is. 5 suits a 1080p canvas.");
-	if (P && P->nsounds > 0) {
-		obs_property_t *hl = obs_properties_add_list(p, "hear", "Who hears it", OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
-		obs_property_list_add_string(hl, "You and your stream", "both");
-		obs_property_list_add_string(hl, "Only your stream", "stream");
-		obs_property_list_add_string(hl, "Only you", "me");
-		obs_property_list_add_string(hl, "Nobody (no sounds)", "off");
-		obs_property_set_long_description(hl, "You hear it through OBS's audio monitoring, like an alert. If you hear it twice "
-						      "(an echo), you already hear your stream: pick \"Only your stream\". Its volume is "
-						      "under its name in OBS's Audio Mixer.");
-	}
-	if (box_moved) {
-		obs_properties_add_text(p, "moved_info",
-					"Its box in this scene was moved or resized. It still finds your chat, but it's made to fill "
-					"the whole screen: then it walks along the bottom and is the size set above.",
-					OBS_TEXT_INFO);
-		obs_properties_add_button(p, "fit", "Fit it to the screen", [](obs_properties_t *, obs_property_t *, void *d) {
-			auto *pet = static_cast<PetSource *>(d);
-			if (!fit_to_screen(pet->source))
-				warn("pet: its box couldn't be fitted to the screen (is it in a moved group?)");
-			pet->status_dirty_ = true;
-			return false;
-		});
-	}
+	obs_property_set_long_description(ed, "Opens the pet editor in your browser to customize or create characters.");
 
-	add_pets(p, s.get());
-
-	obs_property_t *tl = obs_properties_add_list(p, "test_pick", "Try a reaction", OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
-	for (auto &t : TESTS)
-		obs_property_list_add_string(tl, t.label, t.id);
-	obs_properties_add_button(p, "test_go", "Play it", [](obs_properties_t *, obs_property_t *, void *d) {
-		auto *pet = static_cast<PetSource *>(d);
-		Data s(obs_source_get_settings(pet->source));
-		pet->test(str(s.get(), "test_pick"));
-		return false;
-	});
-
-	// ---- the chat: shown to everyone, as it decides a lot of what the pet can do
-	auto names = picture_sources(source);
-	obs_properties_t *gc = group(p, "g_chat", "Your chat");
-	source_list(gc, "perch", "Chat source", names, str(s.get(), "perch"), found_chat, "chat");
-	obs_property_set_modified_callback2(obs_properties_get(gc, "perch"), on_chat, this);
-	obs_properties_add_text(gc, "chat_info", "", OBS_TEXT_INFO);   // (chat_text)
-	obs_properties_add_float_slider(gc, "visit", "How often it sits on top of the chat", 0, 1, 0.05);
-	obs_property_t *pb = obs_properties_add_bool(gc, "perch_box", "Sit on top of this chat anyway");
-	obs_property_set_long_description(pb, "Guesses where the newest message is from the chat's pixels. "
-					      "Works best with an OBSPETS Chat.");
-	obs_property_set_modified_callback2(pb, on_chat, this);
-	obs_property_t *oy = obs_properties_add_bool(gc, "other_yank", "Rip messages out of this chat anyway");
-	obs_property_set_long_description(oy, "Flings a copy of the message. The real one stays. "
-					      "An OBSPETS Chat lets it rip out the real line.");
-	obs_properties_add_button(gc, "add_chat", "Add an OBSPETS Chat to this scene", add_chat);
-	obs_properties_add_text(gc, "add_chat_note", "Then hide your old chat source, if you had one.", OBS_TEXT_INFO);
-
-	obs_property_t *adv = obs_properties_add_bool(p, "advanced", "Show all settings");
-	obs_property_set_modified_callback(adv, show_advanced);
-
-	// ---- everything else (hidden until "Show all settings")
-	obs_properties_t *g = group(p, "g_try", "More reactions to try");
-	obs_property_t *ml = obs_properties_add_list(g, "test_more", "Reaction", OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
-	for (auto &m : MOOD_TESTS)
-		obs_property_list_add_string(ml, m.label, strchr(m.id, ':') ? m.id : (std::string("mood:") + m.id).c_str());
-	obs_properties_add_button(g, "test_more_go", "Play it", [](obs_properties_t *, obs_property_t *, void *d) {
-		auto *pet = static_cast<PetSource *>(d);
-		Data s(obs_source_get_settings(pet->source));
-		pet->test(str(s.get(), "test_more"));
-		return false;
-	});
-
-	g = group(p, "g_scene", "Where it walks");
-	obs_property_t *fl = obs_properties_add_int_slider(g, "floor", "Height above the bottom edge", 0, 400, 1);
-	obs_property_int_set_suffix(fl, " px");
-	obs_property_set_long_description(fl, "Raise it if it walks behind something at the bottom of your screen.");
-	source_list(g, "alert", "Your alerts (it looks at them)", names, str(s.get(), "alert"), found_alert, "alert");
-	obs_property_t *aa = obs_properties_add_list(g, "avoid_add", "Keep it off", OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
-	obs_property_list_add_string(aa, "Add a source it shouldn't walk in front of\xE2\x80\xA6", "");
-	for (auto &n : names)
-		obs_property_list_add_string(aa, n.c_str(), n.c_str());
-	obs_property_set_modified_callback(aa, on_avoid_add);
-	obs_property_t *al = obs_properties_add_editable_list(g, "avoid_list", "", OBS_EDITABLE_LIST_TYPE_STRINGS, nullptr, nullptr);
-	obs_property_set_visible(al, !avoid_list(s.get()).empty());   // (an empty list is just a big blank box)
-
-	g = group(p, "g_react", "What it reacts to");
-	obs_properties_add_bool(g, "reactions", "React to alerts, channel points and chat");
-	obs_properties_add_bool(g, "twitch_alerts", "Follows, subs, gifts, bits, Kicks and raids");
-	obs_property_t *rw = obs_properties_add_text(g, "reward", "", OBS_TEXT_DEFAULT);   // (its label: reward_text)
-	obs_property_set_modified_callback2(rw, on_name, this);
-
-	// (Auto mod and the limits are on sindruid.com/streamtools/obspets; the personality is the character's, in the editor)
-	g = group(p, "g_moods", "Chat");
-	obs_properties_add_bool(g, "moods", "React to what people say in chat");
-	obs_property_t *ch = obs_properties_add_list(g, "chatty", "How often", OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
-	for (auto &c : CHATTY)
-		obs_property_list_add_string(ch, c.label, c.id);
-	obs_property_set_long_description(ch, "At most this often. It only reacts when chat says something worth reacting to.");
-	obs_properties_add_text(g, "ignore", "Never react to these chatters (bots), separated by commas", OBS_TEXT_DEFAULT);
-
-	g = group(p, "g_mood", "Habits");
-	obs_properties_add_float_slider(g, "naps", "Naps (0 never, 1 normal, 3 a lot)", 0, 3, 0.1);
-	obs_properties_add_float_slider(g, "energy", "Energy (walks, hops and swats)", 0, 3, 0.1);
-
-	g = group(p, "g_label", "Name label (when a viewer pets it)");
-	obs_properties_add_text(g, "label_after", "", OBS_TEXT_DEFAULT);   // (its label: reward_text)
-	obs_properties_add_font(g, "label_font", "Font");
-	obs_properties_add_color(g, "label_color", "Text color");
-
-	g = group(p, "g_char", "Your own characters");
-	obs_properties_add_button(g, "open_packs", "Open my characters folder", [](obs_properties_t *, obs_property_t *, void *) {
-		std::string dir = user_packs_dir();
-		os_mkdirs(dir.c_str());
-		open_folder(dir);
-		return false;
-	});
-	obs_property_t *pd = obs_properties_add_path(g, "pack_dir", "Or use a character folder from anywhere", OBS_PATH_DIRECTORY, "", nullptr);
-	// (the Character list above grays out while a folder is set: show that straight away)
-	obs_property_set_modified_callback(pd, [](obs_properties_t *gp, obs_property_t *, obs_data_t *st) {
-		pack_list_state(gp, st);
-		return true;
-	});
-	obs_properties_add_text(g, "status", pack_status().c_str(), OBS_TEXT_INFO);
-	obs_properties_add_button(g, "reload", "Reload the character (after changing its files)", [](obs_properties_t *, obs_property_t *, void *d) {
-		static_cast<PetSource *>(d)->reload_pack();
-		return false;
-	});
-
-	show_advanced(p, adv, s.get());
-	pets_ui(p, nullptr, s.get());
-	reward_text(this, p, s.get());
-	chat_text(this, p, s.get());
 	return p;
 }
 
@@ -1974,7 +1570,7 @@ obs_properties_t *PetSource::properties()
 void register_pet_source()
 {
 	obs_source_info si = {};
-	si.id = SOURCE_ID;
+	si.id = PET_SOURCE_ID;
 	si.type = OBS_SOURCE_TYPE_INPUT;
 	si.output_flags = OBS_SOURCE_VIDEO | OBS_SOURCE_AUDIO | OBS_SOURCE_CUSTOM_DRAW;
 	si.icon_type = OBS_ICON_TYPE_CUSTOM;

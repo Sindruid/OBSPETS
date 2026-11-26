@@ -39,19 +39,19 @@ static bool play_file(Pet &d, const std::string &path)
 
 // Chat moods can come every few seconds, so a mood only makes a voice sound `mood_gap` seconds
 // after its last one. Alerts and channel-point pets always do. Foley is never held back.
-void sound(Pet &d, const std::string &key, bool from_mood)
+bool sound(Pet &d, const std::string &key, bool from_mood)
 {
 	if (!d.pack || d.hear == Hear::Off)
-		return;
+		return false;
 	auto it = d.pack->sounds.find(key);
 	if (it == d.pack->sounds.end() || it->second.files.empty())
-		return;
+		return false;
 	const SoundRole &snd = it->second;
 	bool voice = is_voice(key);
 	if (voice && from_mood && d.now - d.voiced < d.mood_gap)
-		return;
+		return false;
 	if (!obs_source_active(d.source))   // only while it is on screen
-		return;
+		return false;
 	int n = (int)snd.files.size();
 	int k = rnd_int(0, n - 1);
 	auto lf = d.last_file.find(key);
@@ -59,8 +59,11 @@ void sound(Pet &d, const std::string &key, bool from_mood)
 		k = (k + 1) % n;
 	d.last_file[key] = k;
 	const std::string &path = snd.files[k];
-	if (play_file(d, path) && voice)
+	if (!play_file(d, path))
+		return false;
+	if (voice)
 		d.voiced = d.now;
+	return true;
 }
 
 // ------------------------------------------------------------------ the scene
@@ -237,15 +240,15 @@ static bool auto_look(obs_scene_t *, obs_sceneitem_t *item, void *p)
 	return true;
 }
 
-static void auto_find(Pet &d, obs_scene_t *scene)
+static void auto_find(PetSource &ps, obs_scene_t *scene)
 {
-	AutoFind ctx{d.source, "", "", ""};
+	AutoFind ctx{ps.source, "", "", ""};
 	obs_scene_enum_items(scene, auto_look, &ctx);
-	d.auto_chat = ctx.ours.empty() ? ctx.chat : ctx.ours;
-	d.auto_alert = ctx.alert;
-	std::lock_guard<std::mutex> g(d.owner->mu_);   // (the properties say what was found)
-	d.owner->ui.auto_chat = d.auto_chat;
-	d.owner->ui.auto_alert = ctx.alert;
+	ps.scene.auto_chat = ctx.ours.empty() ? ctx.chat : ctx.ours;
+	ps.scene.auto_alert = ctx.alert;
+	std::lock_guard<std::mutex> g(ps.mu_);   // (the properties say what was found)
+	ps.ui.auto_chat = ps.scene.auto_chat;
+	ps.ui.auto_alert = ctx.alert;
 }
 
 // The chatters it never reacts to: its own list, and the ones its OBSPETS Chat hides (bots).
@@ -261,37 +264,28 @@ void merge_ignore(Pet &d)
 	}
 }
 
-void scan(Pet &d)
+// The scene lookup every pet of a source shares (4 times a second, from PetSource::tick): where the
+// chat, the alert and the kept-off sources are. The settings it reads are the source's, not a pet's.
+void scan_scene(PetSource &ps)
 {
-	obs_video_info ovi;
-	if (obs_get_video_info(&ovi)) {
-		d.W = ovi.base_width;
-		d.H = ovi.base_height;
-	}
-	d.floorY = d.H - d.floor_px;
-	d.half = d.pack->half * d.px;
-
-	bool have_chat = false, have_alert = false;
-	Box chat, alert;
-	std::vector<Box> avoid;
-	ChatKind kind = ChatKind::None;
-	long long top = 0, page_h = 0;
-	std::string chat_name = d.perch_name.empty() ? d.auto_chat : d.perch_name;
-	std::string hide;
-	bool moved = false;
-	Home home = home_of(d.source);
+	const Pet &L = *ps.lead_;
+	SceneView v;
+	v.auto_chat = ps.scene.auto_chat;
+	v.auto_alert = ps.scene.auto_alert;
+	Home home = home_of(ps.source);
 	if (obs_scene_t *scene = home.scene) {
 		// Its box moved or resized: what's around it is mapped into its own pixels, so it still
 		// walks under the chat and sits on it (along the bottom of its box)
 		matrix4 inv;
-		moved = home.self && box_moved(scene, home.self, &inv);
-		const matrix4 *to_pet = moved ? &inv : nullptr;
-		if (d.perch_name.empty() || d.alert_name.empty()) {
-			d.auto_t -= 0.25;
-			if (d.auto_t <= 0) {
-				d.auto_t = 2;
-				auto_find(d, scene);
-				chat_name = d.perch_name.empty() ? d.auto_chat : d.perch_name;
+		v.moved = home.self && box_moved(scene, home.self, &inv);
+		const matrix4 *to_pet = v.moved ? &inv : nullptr;
+		if (L.perch_name.empty() || L.alert_name.empty()) {
+			ps.auto_t -= 0.25;
+			if (ps.auto_t <= 0) {
+				ps.auto_t = 2;
+				auto_find(ps, scene);
+				v.auto_chat = ps.scene.auto_chat;
+				v.auto_alert = ps.scene.auto_alert;
 			}
 		}
 		auto find = [&](const std::string &name, Box &out) -> obs_sceneitem_t * {
@@ -303,38 +297,69 @@ void scan(Pet &d)
 			out = rect_of(scene, item, to_pet);
 			return item;
 		};
-		obs_sceneitem_t *chat_item = find(chat_name, chat);
-		have_chat = chat_item != nullptr;
-		if (have_chat) {
+		std::string chat_name = L.perch_name.empty() ? v.auto_chat : L.perch_name;
+		obs_sceneitem_t *chat_item = find(chat_name, v.chat);
+		v.have_chat = chat_item != nullptr;
+		if (v.have_chat) {
+			v.chat_name = chat_name;
 			obs_source_t *cs = obs_sceneitem_get_source(chat_item);
 			if (ChatSource *c = ChatSource::from(cs)) {
-				kind = ChatKind::Ours;
-				long long seq = 0;
-				if (c->layout(top, page_h, seq))
-					d.rep_seq = seq;
-				hide = c->hidden();
+				v.kind = ChatKind::Ours;
+				v.have_seq = c->layout(v.top, v.page_h, v.seq);
+				v.hide = c->hidden();
 			} else {
-				kind = ChatKind::Other;
-				// its pixels say where the top message is (read_chat_pixels, in render)
-				uint32_t sh = cs ? obs_source_get_height(cs) : 0;
-				if (d.perch_box && d.px_src == chat_name && d.px_top >= 0 && sh > 0) {
-					top = (long long)std::lround(d.px_top * sh);
-					page_h = sh;
-					// it grew: a new message came in (the scan only sees it rise)
-					if (d.px_prev >= 0 && d.px_top - d.px_prev > 6.0 / sh)
-						d.rep_seq++;
-					d.px_prev = d.px_top;
-				}
+				v.kind = ChatKind::Other;
+				v.chat_h = cs ? obs_source_get_height(cs) : 0;
 			}
 		}
-		have_alert = find(d.alert_name.empty() ? d.auto_alert : d.alert_name, alert) != nullptr;
-		for (auto &n : d.avoid_names) {
+		v.have_alert = find(L.alert_name.empty() ? v.auto_alert : L.alert_name, v.alert) != nullptr;
+		for (auto &n : L.avoid_names) {
 			Box r;
-			if (find(n, r))
-				avoid.push_back(r);
+			if (find(n, r)) {
+				v.avoid.push_back(r);
+				if (L.sit_names.count(n))
+					v.sit.push_back({n, r});
+			}
 		}
 	}
 	obs_source_release(home.scene_src);
+	ps.scene = std::move(v);
+	ps.scene_n++;
+}
+
+void scan(Pet &d)
+{
+	obs_video_info ovi;
+	if (obs_get_video_info(&ovi)) {
+		d.W = ovi.base_width;
+		d.H = ovi.base_height;
+	}
+	d.floorY = d.H - d.floor_px;
+	d.half = d.pack->half * d.px;
+
+	const SceneView &v = d.owner->scene;
+	d.scene_seen = d.owner->scene_n;
+	bool have_chat = v.have_chat, have_alert = v.have_alert, moved = v.moved;
+	Box chat = v.chat, alert = v.alert;
+	std::vector<Box> avoid = v.avoid;
+	ChatKind kind = v.kind;
+	std::string chat_name = v.chat_name;
+	std::string hide = v.hide;
+	long long top = v.top, page_h = v.page_h;
+	if (kind == ChatKind::Ours && v.have_seq)
+		d.rep_seq = v.seq;
+	if (kind == ChatKind::Other) {
+		// its pixels say where the top message is (read_chat_pixels, in render)
+		uint32_t sh = v.chat_h;
+		if (d.perch_box && d.px_src == chat_name && d.px_top >= 0 && sh > 0) {
+			top = (long long)std::lround(d.px_top * sh);
+			page_h = sh;
+			// it grew: a new message came in (the scan only sees it rise)
+			if (d.px_prev >= 0 && d.px_top - d.px_prev > 6.0 / sh)
+				d.rep_seq++;
+			d.px_prev = d.px_top;
+		}
+	}
 	if (moved != d.moved) {
 		d.moved = moved;
 		if (d.slot == 0) {
@@ -402,11 +427,27 @@ void scan(Pet &d)
 		d.has_perch = false;
 	}
 
+	// Ledges: the tops of the kept-off sources it may sit on. Not too near the top of the canvas
+	// (nowhere to stand), and wide enough to stand on.
+	d.ledges.clear();
+	for (auto &[name, r] : v.sit) {
+		Pet::Ledge l{name, r, std::floor(r.y0 + 0.5), r.x0 + d.half * 0.8, r.x1 - d.half * 0.8};
+		if (l.y > d.H * 0.15 && l.y < d.floorY - 12 * d.S && l.x1 - l.x0 > 4 * d.S)
+			d.ledges.push_back(l);
+	}
+	d.has_ledge = false;
+	for (auto &l : d.ledges)
+		if (l.name == d.ledge) {
+			d.on_ledge = l;
+			d.has_ledge = true;
+		}
+
 	// where it is and whether it sleeps, for the mood engine
 	std::string st = std::string(d.anim == "sleep" ? "asleep" : "awake") +
-			 (d.on == On::Perch ? ", sitting on top of the chat"
-			  : d.has_chat     ? ", on the floor next to the chat"
-					   : ", on the floor (the chat isn't on screen)");
+			 (d.on == On::Perch   ? ", sitting on top of the chat"
+			  : d.on == On::Ledge ? ", sitting on top of something on screen"
+			  : d.has_chat        ? ", on the floor next to the chat"
+					      : ", on the floor (the chat isn't on screen)");
 	if (st != d.state_sent) {
 		d.state_sent = st;
 		d.mood.state = st;
@@ -539,6 +580,11 @@ static void range(Pet &d, double &a, double &b)
 		b = d.perch_x1;
 		return;
 	}
+	if (d.on == On::Ledge && d.has_ledge) {
+		a = d.on_ledge.x0;
+		b = d.on_ledge.x1;
+		return;
+	}
 	if (const Seg *s = seg_at(d, d.x)) {
 		a = s->a;
 		b = s->b;
@@ -602,6 +648,11 @@ static void act_look(Pet &d)
 }
 static void act_clean(Pet &d)
 {
+	if (d.pack && d.pack->has("stretch") && rnd(0, 1) < 0.4) {
+		play(d, "stretch");
+		after(d, anim_len(d, "stretch", 1), idle_then_decide);
+		return;
+	}
 	play(d, "clean");
 	after(d, anim_len(d, "clean", 3), [](Pet &dd) {
 		play(dd, "clean2");
@@ -659,6 +710,75 @@ static void act_leave(Pet &d)
 	walk_to(d, plan.px, "walk", [plan](Pet &dd) { leap(dd, plan.fx, dd.floorY, On::Floor, -1, nullptr); });
 }
 
+// Up onto a ledge: from the floor beside it (a source that reaches the floor cuts it there), or
+// from under it. One it can get to from where it stands, picked at random.
+struct Climb {
+	double lx = 0, px = 0;   // where it jumps from, and where it lands
+	Pet::Ledge l;
+};
+static bool climb_plan(Pet &d, Climb &out)
+{
+	if (d.ledges.empty() || d.on != On::Floor)
+		return false;
+	const Seg *here = seg_at(d, d.x);
+	if (!here)
+		return false;
+	std::vector<Climb> opts;
+	for (auto &l : d.ledges) {
+		double sides[] = {l.box.x0 - d.half - 2 * d.S, l.box.x1 + d.half + 2 * d.S};
+		for (int i = 0; i < 2; i++)
+			if (seg_at(d, sides[i]) == here)
+				opts.push_back({sides[i], i ? l.x1 : l.x0, l});
+		// straight up from under it, when it doesn't reach down to the floor
+		double a = std::max(l.x0, here->a), b = std::min(l.x1, here->b);
+		if (a < b) {
+			double ux = clampd(d.x, a, b);
+			opts.push_back({ux, ux, l});
+		}
+	}
+	if (opts.empty())
+		return false;
+	out = opts[(size_t)rnd(0, (double)opts.size() - 0.001)];
+	return true;
+}
+static void act_climb(Pet &d)
+{
+	Climb c;
+	if (!climb_plan(d, c)) {
+		act_idle(d);
+		return;
+	}
+	walk_to(d, c.lx, "walk", [c](Pet &dd) {
+		for (auto &l : dd.ledges)
+			if (l.name == c.l.name) {
+				dd.ledge = l.name;
+				dd.on_ledge = l;
+				dd.has_ledge = true;
+				leap(dd, clampd(c.px, l.x0, l.x1), l.y, On::Ledge, -1, nullptr);
+				return;
+			}
+		idle_then_decide(dd);   // (it went while it walked there)
+	});
+}
+// Down off a ledge: to the floor beside it, on the nearer side it can land on.
+static void off_ledge(Pet &d, Next n)
+{
+	const Box &b = d.on_ledge.box;
+	double sides[] = {b.x0 - d.half - 2 * d.S, b.x1 + d.half + 2 * d.S};
+	if (std::abs(sides[1] - d.x) < std::abs(sides[0] - d.x))
+		std::swap(sides[0], sides[1]);
+	double fx = seg_at(d, sides[0]) ? sides[0] : seg_at(d, sides[1]) ? sides[1] : nearest_floor_x(d, d.x);
+	if (!d.has_ledge)
+		fx = nearest_floor_x(d, d.x);
+	leap(d, fx, d.floorY, On::Floor, 6 * d.S, std::move(n));
+	d.prep = 0.04;
+}
+static void act_down(Pet &d)
+{
+	double edge = std::abs(d.on_ledge.x0 - d.x) < std::abs(d.on_ledge.x1 - d.x) ? d.on_ledge.x0 : d.on_ledge.x1;
+	walk_to(d, edge, "walk", [](Pet &dd) { off_ledge(dd, nullptr); });
+}
+
 // chat quiet for minutes (or no chat) -> naps a lot; busy -> hardly
 static double sleepiness(Pet &d)
 {
@@ -682,15 +802,21 @@ void decide(Pet &d)
 		double w;
 		int id;
 	};
-	enum { IDLE, LOOK, CLEAN, SLEEP, WALK, RUN, PAW, HOP, LEAVE, VISIT };
+	enum { IDLE, LOOK, CLEAN, SLEEP, WALK, RUN, PAW, HOP, LEAVE, VISIT, CLIMB, DOWN };
 	std::vector<Act> acts;
-	if (d.on == On::Perch && d.has_perch) {
+	if (d.on == On::Ledge && d.has_ledge) {
+		// a good spot for a nap
+		acts = {{30, IDLE}, {16, LOOK}, {12, CLEAN}, {20 * z, SLEEP}, {8 * e, WALK}, {4 * e, PAW}, {11, DOWN}};
+	} else if (d.on == On::Perch && d.has_perch) {
 		acts = {{30, IDLE}, {18, LOOK}, {12, CLEAN}, {14 * z, SLEEP}, {12 * e, WALK}, {5 * e, PAW}, {9, LEAVE}};
 	} else {
 		acts = {{26, IDLE}, {16, LOOK}, {12, CLEAN}, {22 * e, WALK}, {4 * e, RUN}, {9 * z, SLEEP}, {6 * e, PAW}, {5 * e, HOP}};
 		Plan p;
 		if (visit_plan(d, p) && d.now >= d.stay_down)
 			acts.push_back({40 * d.visit, VISIT});
+		Climb c;
+		if (climb_plan(d, c) && d.now >= d.stay_down)
+			acts.push_back({14, CLIMB});
 	}
 	double total = 0;
 	for (auto &a : acts)
@@ -718,6 +844,8 @@ void decide(Pet &d)
 	case HOP: act_hop(d); break;
 	case LEAVE: act_leave(d); break;
 	case VISIT: act_visit(d); break;
+	case CLIMB: act_climb(d); break;
+	case DOWN: act_down(d); break;
 	}
 }
 
@@ -857,6 +985,19 @@ static Step say(const char *key)
 		n(d);
 	};
 }
+// a voice sound with its call (a bark, a meow) when it has one: only while the sound plays, so it
+// never calls out silently (the chat-mood sound gap can hold the sound back)
+static Step call(const char *key)
+{
+	return [key](Pet &d, Next n) {
+		if (sound(d, key, d.voice == "mood") && d.pack->has("call")) {
+			play(d, "call");
+			after(d, anim_len(d, "call", 1), n);
+		} else {
+			n(d);
+		}
+	};
+}
 static Step hop(double peak, int nhearts)
 {
 	return [peak, nhearts](Pet &d, Next n) {
@@ -907,7 +1048,7 @@ bool run_alert(Pet &d, const std::string &kind, int n)
 		bang(d);
 		face_alert(d);
 		d.bobbing = true, d.bob = 0;
-		chain(d, {say("notice"), hold("idle", woke ? 0.9 : 0.5), hold("look", 2.4), fx(face_alert), hold("idle", 1.4)});
+		chain(d, {call("notice"), hold("idle", woke ? 0.9 : 0.5), hold("look", 2.4), fx(face_alert), hold("idle", 1.4)});
 	} else if (kind == "sub") {
 		bang(d);
 		face_alert(d);
@@ -940,7 +1081,7 @@ bool run_alert(Pet &d, const std::string &kind, int n)
 		bang(d, true);
 		face_alert(d);
 		d.sq = 0.3;
-		std::vector<Step> steps = {say("notice"), loops("scared", 1), get_down};
+		std::vector<Step> steps = {call("notice"), get_down};
 		for (int i = 0; i < (n >= 50 ? 3 : n >= 10 ? 2 : 1); i++)
 			steps.push_back(lap);
 		steps.push_back([](Pet &dd, Next nx) {
@@ -1109,24 +1250,24 @@ static void mood_angry(Pet &d)
 	pick(d, {
 			// puffs up, gets down, stomps off, glares back, turns its back
 			[] {
-				return std::vector<Step>{wake, say("angry"), loops("scared", 2), get_down_if_up,
+				return std::vector<Step>{wake, say("angry"), loops("angry", 2), get_down_if_up,
 							 wander(rnd(0.08, 0.16), -1), fx(face_chat), hold("idle", 1.6),
-							 fx(face_away), loops("clean", 1)};
+							 fx(face_away), loops("stretch", 1)};
 			},
 			// charges the chat and swipes at it, then turns its back on it
 			[] {
-				return std::vector<Step>{wake, to_chat("run"), fx(angry_mark), say("angry"), loops("scared", 1),
+				return std::vector<Step>{wake, to_chat("run"), fx(angry_mark), say("angry"), loops("angry", 1),
 							 paw(2, true), get_down_if_up, fx(face_away), wander(rnd(0.05, 0.1), -1),
 							 fx(face_chat), hold("look", 1.2)};
 			},
 			// a huff: turns its back right where it is, glances back, still cross
 			[] {
-				return std::vector<Step>{wake, say("angry"), loops("scared", 1), fx(face_away), hold("idle", 2.2),
+				return std::vector<Step>{wake, say("angry"), loops("angry", 1), fx(face_away), hold("idle", 2.2),
 							 fx([](Pet &dd) {
 								 dd.face = -dd.face;
 								 angry_mark(dd);
 							 }),
-							 hold("look", 0.8), fx(face_away), loops("clean", 1), get_down_if_up};
+							 hold("look", 0.8), fx(face_away), loops("stretch", 1), get_down_if_up};
 			},
 		});
 }
@@ -1147,7 +1288,7 @@ static void mood_hop_on(Pet &d)
 	}
 	pick(d, {
 			[] {
-				return std::vector<Step>{wake, say("notice"), [](Pet &dd, Next) {
+				return std::vector<Step>{wake, call("notice"), [](Pet &dd, Next) {
 								 dd.busy = false;
 								 act_visit(dd);
 							 }};
@@ -1215,8 +1356,8 @@ static void mood_happy(Pet &d)
 				return std::vector<Step>{wake, say("question"), hold("idle", 0.3), hop(13, 3), hold("idle", 0.4),
 							 hop(8, 0), hold("idle", 1)};
 			},
-			[] { return std::vector<Step>{wake, to_chat("run"), say("notice"), hop(13, 3), hold("idle", 1)}; },
-			[] { return std::vector<Step>{wake, say("notice"), lap, fx(face_chat), hop(12, 2), hold("idle", 1)}; },
+			[] { return std::vector<Step>{wake, to_chat("run"), call("notice"), hop(13, 3), hold("idle", 1)}; },
+			[] { return std::vector<Step>{wake, call("notice"), lap, fx(face_chat), hop(12, 2), hold("idle", 1)}; },
 		});
 }
 
@@ -1241,9 +1382,9 @@ static void mood_sleepy(Pet &d)
 	if (d.anim == "sleep")
 		return;
 	pick(d, {
-			[] { return std::vector<Step>{hold("idle", 0.6), loops("clean", 1), nap()}; },
+			[] { return std::vector<Step>{hold("idle", 0.6), loops("stretch", 1), nap()}; },
 			// curls up right next to the chat
-			[] { return std::vector<Step>{to_chat("walk"), loops("clean", 1), nap()}; },
+			[] { return std::vector<Step>{to_chat("walk"), loops("stretch", 1), nap()}; },
 		});
 }
 
@@ -1281,7 +1422,7 @@ static void mood_sulk(Pet &d)
 	pick(d, {
 			[] {
 				return std::vector<Step>{wake, dots_mark(2.6, true), hold("idle", 2.6), flip_face(), hold("look", 0.7),
-							 flip_face(), loops("clean", 1), hold("idle", 1)};
+							 flip_face(), loops("stretch", 1), hold("idle", 1)};
 			},
 			// walks off a little way first, then sits with its back to chat
 			[] {
@@ -1344,15 +1485,15 @@ static void mood_swat_chat(Pet &d)
 static void mood_greet(Pet &d)
 {
 	pick(d, {
-			[] { return std::vector<Step>{wake, to_chat("run"), hold("look", 0.6), say("question"), hop(11, 2), hold("idle", 1)}; },
-			[] { return std::vector<Step>{wake, fx(face_chat), say("notice"), hop(9, 1), to_chat("walk"), hold("look", 1.2)}; },
+			[] { return std::vector<Step>{wake, to_chat("run"), hold("look", 0.6), call("question"), hop(11, 2), hold("idle", 1)}; },
+			[] { return std::vector<Step>{wake, fx(face_chat), call("notice"), hop(9, 1), to_chat("walk"), hold("look", 1.2)}; },
 		});
 }
 
 static void mood_judge(Pet &d)
 {
 	chain(d, {wake, to_chat("walk"), hold("look", 2.4), dots_mark(2.2), hold("idle", 1.2), fx(face_away),
-		  loops("clean", 1), hold("idle", 0.8)});
+		  loops("stretch", 1), hold("idle", 0.8)});
 }
 
 static void mood_scared(Pet &d)
@@ -1375,7 +1516,8 @@ static void mood_show_off(Pet &d)
 
 static void mood_beg(Pet &d)
 {
-	chain(d, {wake, to_chat("walk"), say("plead"), hold("look", 0.8), paw(1), hold("look", 0.8), paw(1), hold("look", 1.2)});
+	chain(d, {wake, to_chat("walk"), say("plead"), hold("beg", 1.6), hold("look", 0.6), hold("beg", 1.8),
+		  hold("idle", 0.8)});
 }
 
 // ------------------------------------------------------------------ yank
@@ -1682,6 +1824,31 @@ void react(Pet &d)
 			if (d.mode != Mode::Move && (d.x < d.perch_x0 - 1 || d.x > d.perch_x1 + 1))
 				walk_to(d, clampd(d.x, d.perch_x0, d.perch_x1), "walk", idle_then_decide);
 		}
+	} else if (d.on == On::Ledge) {
+		if (!d.has_ledge) {   // it went, or was hidden: down to the floor
+			interrupt(d);
+			leap(d, nearest_floor_x(d, d.x), d.floorY, On::Floor, 4 * d.S, nullptr);
+			d.prep = 0;
+		} else if (std::abs(d.on_ledge.y - d.y) > 12 * d.S) {   // it was moved a long way: hops after it
+			interrupt(d);
+			leap(d, clampd(d.x, d.on_ledge.x0, d.on_ledge.x1), d.on_ledge.y, On::Ledge, 0, startled);
+			d.land_sfx.clear();
+			d.prep = 0;
+		} else if (d.mode != Mode::Move && (d.x < d.on_ledge.x0 - 1 || d.x > d.on_ledge.x1 + 1)) {
+			walk_to(d, clampd(d.x, d.on_ledge.x0, d.on_ledge.x1), "walk", idle_then_decide);
+		}
+		// alerts and chat reactions happen on the floor: down first, and they run once it lands
+		// (not for one it sleeps through, or a purr or a yawn in its sleep, which happen right there)
+		const MoodReq &m = d.next_mood;
+		bool asleep = d.anim == "sleep";
+		bool in_place = asleep && (m.kind == "love" || m.kind == "sleepy");
+		bool slept = !m.test && asleep && napped(d) < NAP_GRACE && !waker(m.kind);
+		bool mood = d.has_mood && !d.busy && !in_place && !slept;
+		if (d.mode == Mode::Ground && (d.has_alert || mood)) {
+			interrupt(d);
+			off_ledge(d, nullptr);
+			return;
+		}
 	} else if (d.on == On::Floor && d.mode != Mode::Move && !d.segs.empty() && !seg_at(d, d.x)) {
 		walk_to(d, nearest_floor_x(d, d.x), "run", idle_then_decide);
 	}
@@ -1768,6 +1935,8 @@ void tick_motion(Pet &d, double dt)
 		} else {
 			if (d.dest == On::Perch && d.has_perch)
 				d.ay1 = d.perch_y;
+			if (d.dest == On::Ledge && d.has_ledge)
+				d.ay1 = d.on_ledge.y;
 			if (d.dest == On::Floor)
 				d.ay1 = d.floorY;
 			d.air += dt;
