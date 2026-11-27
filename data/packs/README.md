@@ -181,7 +181,7 @@ Files are looked for in `sound_dir`, which is relative to the pack's folder. If 
 | `pop` | foley | ... and bursting |
 
 - **Format:** use `.wav` files, ideally stereo 48 kHz. 16-bit, 24-bit and 32-bit float all work, at any sample rate. The OBSPETS plugin plays only `.wav`; the Pet's properties list any other file as a problem.
-- **Loudness:** about −38 LUFS for voice and −41 LUFS for foley sits nicely under a stream. The OBSPETS source plays its sounds itself, so its fader in OBS's Audio Mixer sets the overall volume. A new OBSPETS source has monitoring on (you hear it, and so does the stream), like an alert sound.
+- **Loudness:** about −38 LUFS for voice and −41 LUFS for foley sits nicely under a stream. The OBSPETS source plays its sounds itself, so its fader in OBS's Audio Mixer sets the overall volume. By default you and your stream both hear every sound, like an alert sound; the settings page can change that for each reaction.
 - **Voice and foley** can overlap: a swat doesn't cut a meow short.
 
 ### Colors and marks

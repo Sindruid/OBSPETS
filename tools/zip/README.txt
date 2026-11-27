@@ -34,8 +34,9 @@ Things to try
 - Channel points: once signed in, the window has a button that makes a "Pet <name>" reward
   on your channel. (Channel points need Twitch Affiliate or Partner.)
 - "Try a reaction" shows what it does for a follow, a raid, a chat message and so on.
-- You and your stream both hear it. "Who hears it" changes that (pick "Only your stream" if
-  you hear it twice). Its volume is in OBS's Audio Mixer, under OBSPETS.
+- You and your stream both hear it. Sound & Habits in OBSPETS Settings picks who hears each
+  reaction: you, your stream, both or nobody (say, alerts for everyone and chat reactions
+  only for you). The stream's volume is in OBS's Audio Mixer, under OBSPETS.
 - If you move or resize its box, it offers to fit it back to the screen: it's made to fill the
   whole screen, and "Size" sets how big it is.
 - "Pets" adds up to 6 pets. Pick who reacts (taking turns, at random, or all of them), and how

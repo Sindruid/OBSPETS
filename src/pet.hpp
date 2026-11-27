@@ -87,7 +87,8 @@ inline const char *NO_SOURCE = "(none)";
 //        its pixels) and yanking from it (other_yank) are off unless ticked.
 enum class ChatKind { None, Ours, Other };
 
-// Who hears the pet (the "hear" setting): the streamer (OBS's audio monitoring) and the stream.
+// Who hears a sound: the streamer (OBS's audio monitoring), the stream, both or nobody. "hear" is
+// the source's default; "sfx_<id>" sets it for one reaction (SFX_IDS in pet-source.cpp).
 enum class Hear { Both, Stream, Me, Off };
 
 enum class Mode { Ground, Move, Air };
@@ -135,8 +136,10 @@ struct Pet {
 	std::string reward;   // the channel-point reward that pets it ({name} filled in)
 	std::string name, label_after;
 	uint32_t label_color = 0xFFDEE4EC;
-	Hear hear = Hear::Both;
-	Mixer *mixer = nullptr;                  // the source's audio
+	Hear hear = Hear::Both;                  // who hears a sound with no "sfx_<id>" of its own
+	std::map<std::string, Hear> sfx;         // who hears each reaction's sounds (REACTS ids, "automod", "idle")
+	Mixer *mixer = nullptr;                  // the stream's side: the source's audio
+	Mixer *ears = nullptr;                   // the streamer's side (nullptr: none)
 	std::map<std::string, ClipPtr> clips;    // decoded sounds by path (nullptr: won't play)
 	MoodProfile mood;
 	std::vector<std::string> ignore_own;     // its own "never react to" list (the chat's hidden chatters join it)
@@ -216,6 +219,7 @@ struct Pet {
 	double stay_down = 0, nap_at = 0;
 	double heat = 0, quiet = 0, burst_n = 0;
 	std::string voice;   // whose chain this is: "alert" or "mood"
+	std::string act;     // the reaction its sounds belong to right now (REACTS id or "automod"; "": its own doings)
 	double voiced = -1e9;
 	std::map<std::string, int> last_file;
 	std::vector<Part> parts;
@@ -301,6 +305,12 @@ struct PetSource : PetClient {
 	obs_source_t *source = nullptr;
 	double W = 1920, H = 1080, now = 0;
 	std::unique_ptr<Mixer> mixer;
+	obs_source_t *ears = nullptr;   // what the streamer hears (audio.hpp)
+	std::unique_ptr<Mixer> ear_mixer;
+	double ear_trim = 1;            // "ear_vol": the streamer's volume, on top of the fader
+	float ear_vol_set = -1;
+	int ear_mute_set = -1;
+	double mon_t = 0;               // when it last checked that the source itself isn't monitored
 	std::vector<std::unique_ptr<Pet>> pets;   // by slot (changed on the graphics thread, under pets_mu_)
 	std::mutex pets_mu_;
 	Pet *lead_ = nullptr;   // slot 0, there as long as the source is
@@ -365,13 +375,13 @@ void decide(Pet &d);
 void react(Pet &d);
 void merge_ignore(Pet &d);                 // mood.ignore: its own list and its chat's hidden chatters
 bool fit_to_screen(obs_source_t *self);   // UI thread: its box in the program scene back to the whole canvas
-void set_monitoring(obs_source_t *src, Hear h);   // (pet-source.cpp)
 bool obs_prevents_monitoring_echo();             // OBS 32+ (pet-source.cpp)
 void leave_stage(Pet &d, int dir);   // runs and jumps off the canvas (dir: -1 left, 1 right), then is off screen
 void enter_stage(Pet &d, int dir);   // jumps in from that side
 void play(Pet &d, const std::string &a);
 void after(Pet &d, double secs, Next fn);
-bool sound(Pet &d, const std::string &key, bool from_mood = false);   // -> it played
+// -> it played. `kind`: the reaction it belongs to (nullptr: the pet's current one, d.act)
+bool sound(Pet &d, const std::string &key, bool from_mood = false, const char *kind = nullptr);
 void act_visit(Pet &d);
 void interrupt(Pet &d);
 void set_label(Pet &d, const std::string &user, const std::string &color, const std::string *rest = nullptr);

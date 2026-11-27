@@ -3,6 +3,7 @@
 
 #include <media-io/audio-resampler.h>
 #include <util/platform.h>
+#include <obs.h>
 
 #include <algorithm>
 #include <cmath>
@@ -203,6 +204,109 @@ void Mixer::loop()
 			t = os_gettime_ns();   // fell behind: carry on from now
 		lk.lock();
 	}
+}
+
+// ------------------------------------------------------------------ the streamer's ears
+
+static const char *EARS_ID = "obspet_ears";
+
+void register_ears_source()
+{
+	obs_source_info si = {};
+	si.id = EARS_ID;
+	si.type = OBS_SOURCE_TYPE_INPUT;
+	// (disabled: never in the Add menu; only a Pet makes one, private)
+	si.output_flags = OBS_SOURCE_AUDIO | OBS_SOURCE_CAP_DISABLED | OBS_SOURCE_DO_NOT_DUPLICATE;
+	si.get_name = [](void *) { return "OBSPETS (what you hear)"; };
+	si.create = [](obs_data_t *, obs_source_t *) -> void * { return (void *)1; };
+	si.destroy = [](void *) {};
+	obs_register_source(&si);
+}
+
+// Active for as long as it lives: OBS's monitor only plays a source that is active. Being in no
+// scene and no output channel, it never reaches the mix, whatever its tracks.
+obs_source_t *create_ears(const char *pet_name)
+{
+	std::string name = std::string(pet_name ? pet_name : "OBSPETS") + " (what you hear)";
+	obs_source_t *s = obs_source_create_private(EARS_ID, name.c_str(), nullptr);
+	if (!s)
+		return nullptr;
+	obs_source_set_audio_mixers(s, 0);
+	obs_source_inc_active(s);
+	return s;
+}
+
+void destroy_ears(obs_source_t *ears)
+{
+	if (!ears)
+		return;
+	obs_source_dec_active(ears);
+	obs_source_release(ears);
+}
+
+static std::mutex g_cap_mu;
+static obs_weak_source_t *g_cap = nullptr;   // the Audio Output Capture that records the monitoring device
+static bool g_watching = false;
+
+static void on_dedup(void *, calldata_t *cd)
+{
+	obs_source_t *s = (obs_source_t *)calldata_ptr(cd, "source");
+	std::lock_guard<std::mutex> g(g_cap_mu);
+	obs_weak_source_release(g_cap);
+	g_cap = s ? obs_source_get_weak_source(s) : nullptr;
+}
+
+void watch_monitor_capture()
+{
+	if (obs_get_version() < MAKE_SEMANTIC_VERSION(32, 0, 0))
+		return;   // (no such signal: connecting would only log a warning)
+	signal_handler_connect(obs_get_signal_handler(), "deduplication_changed", on_dedup, nullptr);
+	g_watching = true;
+}
+
+void unwatch_monitor_capture()
+{
+	if (g_watching)
+		signal_handler_disconnect(obs_get_signal_handler(), "deduplication_changed", on_dedup, nullptr);
+	g_watching = false;
+	std::lock_guard<std::mutex> g(g_cap_mu);
+	obs_weak_source_release(g_cap);
+	g_cap = nullptr;
+}
+
+static obs_source_t *capture_ref()
+{
+	std::lock_guard<std::mutex> g(g_cap_mu);
+	return g_cap ? obs_weak_source_get_source(g_cap) : nullptr;
+}
+
+// the same test OBS uses to silence monitored sources in the mix (should_silence_monitored_source)
+bool monitor_reaches_stream()
+{
+	obs_source_t *s = capture_ref();
+	if (!s)
+		return false;
+	bool on = obs_source_active(s) && !obs_source_muted(s) && obs_source_get_volume(s) > 0.0001f;
+	obs_source_release(s);
+	return on;
+}
+
+std::string monitor_capture_name()
+{
+	obs_source_t *s = capture_ref();
+	std::string n = s ? obs_source_get_name(s) : "";
+	obs_source_release(s);
+	return n;
+}
+
+std::string monitor_device_name()
+{
+	const char *name = nullptr, *id = nullptr;
+	obs_get_audio_monitoring_device(&name, &id);
+	std::string n = name ? name : "";
+	if (n.empty() || (id && strcmp(id, "default") == 0))
+		n = "Default";
+	return n;
 }
 
 } // namespace obspet

@@ -115,7 +115,9 @@ static void on_event(enum obs_frontend_event ev, void *)
 bool obs_module_load(void)
 {
 	register_pet_source();
+	register_ears_source();
 	register_chat_source();
+	watch_monitor_capture();
 	Hub::get().start();
 	updater_start();
 	obs_frontend_add_event_callback(on_event, nullptr);
@@ -131,5 +133,6 @@ void obs_module_unload(void)
 	updater_stop();
 	Hub::get().stop();
 	chat_server::stop();
+	unwatch_monitor_capture();
 	obs_log(LOG_INFO, "unloaded");
 }

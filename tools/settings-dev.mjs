@@ -155,6 +155,10 @@ const state = {
 	version: '0.3.0-dev',
 	backend: 'https://sindruid.com',
 	no_echo: true,   // OBS 32+ stops monitoring echo itself
+	// where the streamer hears the pet; FAKE_ECHO=1: Desktop Audio records that device too
+	monitor: process.env.FAKE_ECHO
+		? { device: 'Speakers (Realtek(R) Audio)', capture: 'Desktop Audio', echo: true }
+		: { device: 'SteelSeries Sonar - Aux (SteelSeries Sonar Virtual Audio Device)', capture: '', echo: false },
 	default_bots: DEFAULT_BOTS,
 	account: {
 		signed_in: true,
@@ -211,6 +215,8 @@ const state = {
 				automod_only: false,
 				ignore: DEFAULT_BOTS,
 				hear: 'both',
+				sfx_happy: 'stream', sfx_zoomies: 'off',   // (a couple set apart, to show "mixed")
+				ear_vol: 1,
 				naps: 1,
 				energy: 1,
 				label_after: ' pet {name}',

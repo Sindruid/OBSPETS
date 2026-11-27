@@ -1,5 +1,9 @@
-// The Pet's own sound: it plays its character's .wav files itself (the source has audio, so it has
-// a fader in OBS's Audio Mixer), with no helper media source. Sounds can overlap.
+// The Pet's own sound: it plays its character's .wav files itself, with no helper media source.
+// Sounds can overlap. Each sound goes to the stream, to the streamer, or both, by its reaction:
+// - the stream: the Pet source itself (on the audio tracks, never monitored; its fader in OBS's
+//   Audio Mixer)
+// - the streamer: a private "ears" source the Pet keeps (OBS's audio monitoring, in no scene and on
+//   no track, so the stream never gets it from OBS; its volume and mute follow the Pet's fader)
 #pragma once
 
 #include <obs-module.h>
@@ -46,5 +50,19 @@ private:
 	bool stop_ = false;
 	std::thread thread_;
 };
+
+// The streamer's side (see the top). Created private and kept active; monitoring is set on the UI
+// thread (pet-source.cpp).
+void register_ears_source();
+obs_source_t *create_ears(const char *pet_name);
+void destroy_ears(obs_source_t *ears);
+
+// OBS 32+ says when an Audio Output Capture (Desktop Audio) records the monitoring device: whatever
+// the streamer hears, the stream then gets too, through that capture. (OBS 31 doesn't say.)
+void watch_monitor_capture();     // module load
+void unwatch_monitor_capture();   // module unload
+bool monitor_reaches_stream();    // any thread: that capture is on and not muted
+std::string monitor_capture_name();   // its name ("" when none)
+std::string monitor_device_name();    // OBS's monitoring device ("Default" for the default one)
 
 } // namespace obspet

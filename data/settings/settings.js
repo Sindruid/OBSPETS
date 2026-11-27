@@ -2317,39 +2317,154 @@ async function runTry(src, user, text) {
 	redraw();
 }
 
+// ------------------------------------------------------------------ who hears each sound
+
+// Each reaction's sounds go to you (OBS's audio monitoring), the stream, both or nobody:
+// "sfx_<id>" (both, me, stream or off; src/pet-source.cpp). Unset, it's the source's "hear".
+const SFX_GROUPS = [
+	{ id: 'alerts', label: 'Alerts', ids: REACTS.filter((r) => r.group === 'Alerts').map((r) => r.id) },
+	{ id: 'chat', label: 'Chat reactions', ids: REACTS.filter((r) => r.group === 'Chat').map((r) => r.id) },
+	{ id: 'automod', label: 'Auto mod', hint: 'ripping out what it deleted', ids: ['automod'], test: 'mood:automod' },
+	{ id: 'idle', label: 'On its own', hint: 'landing, coming and going', ids: ['idle'] },
+];
+const SFX_ALL = SFX_GROUPS.flatMap((g) => g.ids);
+const SFX_TESTS = { gift: 'gift:5', bits: 'bits:100', raid: 'raid:8' };
+const sfxTest = (id) => SFX_TESTS[id] || (REACTS.find((r) => r.id === id)?.group === 'Chat' ? `mood:${id}` : id);
+const SFX_SIDES = [
+	{ key: 'me', label: 'You', icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 18v-6a9 9 0 0 1 18 0v6"/><path d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3zM3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z"/></svg>' },
+	{ key: 'stream', label: 'Stream', icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="2"/><path d="M16.24 7.76a6 6 0 0 1 0 8.49m-8.48-.01a6 6 0 0 1 0-8.49m11.31-2.82a10 10 0 0 1 0 14.14m-14.14 0a10 10 0 0 1 0-14.14"/></svg>' },
+];
+const sfxRoute = (cfg, id) => cfg[`sfx_${id}`] ?? cfg.hear ?? 'both';
+const sfxHas = (route, side) => route === 'both' || route === side;
+const sfxJoin = (me, stream) => (me ? (stream ? 'both' : 'me') : stream ? 'stream' : 'off');
+const SFX_SAYS = { both: 'You and your stream hear it', me: 'Only you hear it', stream: 'Only your stream hears it', off: 'Silent' };
+
+// A grid: a row for everything, one per group (Alerts and Chat open to a row per reaction), and
+// two switches on each row, You and Stream. A row over several reactions shows "mixed" when they
+// differ; clicking it turns that side on for all of them (or off, when all are on).
+function buildSoundGrid(src) {
+	const cfg = src.settings;
+	const mon = S.data.monitor || {};
+	const cells = [];   // { ids, side, btn }
+	const named = [];   // rows whose name dims when all of their reactions are silent
+
+	const state = (ids, side) => {
+		const n = ids.filter((id) => sfxHas(sfxRoute(cfg, id), side)).length;
+		return n === ids.length ? 'on' : n ? 'mixed' : 'off';
+	};
+	const paint = () => {
+		for (const c of cells) {
+			const st = state(c.ids, c.side.key);
+			const who = c.side.key === 'me' ? 'you' : 'your stream';
+			c.btn.classList.toggle('on', st === 'on');
+			c.btn.classList.toggle('mixed', st === 'mixed');
+			c.btn.setAttribute('aria-pressed', st === 'mixed' ? 'mixed' : String(st === 'on'));
+			c.btn.title = c.ids.length === 1
+				? `${SFX_SAYS[sfxRoute(cfg, c.ids[0])]}. Click to turn ${who} ${st === 'on' ? 'off' : 'on'}.`
+				: `${c.side.label}: ${st === 'mixed' ? 'some' : st === 'on' ? 'all' : 'none'} of these. Click to turn ${who} ${st === 'on' ? 'off' : 'on'} for all of them.`;
+		}
+		for (const r of named) r.el.classList.toggle('silent', r.ids.every((id) => sfxRoute(cfg, id) === 'off'));
+	};
+	const flip = (ids, side) => {
+		const turnOn = state(ids, side) !== 'on';
+		const patch = {};
+		for (const id of ids) {
+			const r = sfxRoute(cfg, id);
+			const me = side === 'me' ? turnOn : sfxHas(r, 'me');
+			const stream = side === 'stream' ? turnOn : sfxHas(r, 'stream');
+			patch[`sfx_${id}`] = sfxJoin(me, stream);
+		}
+		// every reaction the same: that's also the default ("hear", which alert overlays read too)
+		const all = SFX_ALL.map((id) => patch[`sfx_${id}`] ?? sfxRoute(cfg, id));
+		if (all.every((r) => r === all[0])) patch.hear = all[0];
+		patchSource(src.name, patch, { immediate: true });
+		paint();
+	};
+	const switches = (ids) => SFX_SIDES.map((side) => {
+		const btn = h('button', { type: 'button', class: `sfx-t ${side.key}`, html: side.icon, 'aria-label': side.label, onclick: () => flip(ids, side.key) });
+		cells.push({ ids, side, btn });
+		return btn;
+	});
+	const tryBtn = (what, label) => (what
+		? h('button', { type: 'button', class: 'sfx-try', text: '▶', title: `Try it: ${label}`, 'aria-label': `Try ${label}`,
+			onclick: () => runAction({ action: 'test', source: src.name, what }, { refresh: false }) })
+		: h('span'));
+	const row = (cls, name, ids, tail) => {
+		const el = h('div', { class: `sfx-row ${cls}` }, name, ...switches(ids), tail || h('span'));
+		named.push({ el, ids });
+		return el;
+	};
+
+	const grid = h('div', { class: 'sfx', role: 'group', 'aria-label': 'Who hears each sound' },
+		h('div', { class: 'sfx-row sfx-head' },
+			h('span', { text: 'Who hears it' }),
+			...SFX_SIDES.map((side) => h('span', { class: 'sfx-col', html: `${side.icon}<b>${side.label}</b>` })),
+			h('span'),
+		),
+		row('all', h('div', { class: 'sfx-name', text: 'Everything' }), SFX_ALL),
+	);
+	S.openSfx ||= new Set();
+	for (const g of SFX_GROUPS) {
+		if (g.ids.length === 1) {
+			grid.append(row('grp', h('div', { class: 'sfx-name' },
+				h('span', { class: 'sfx-caret' }), h('span', { text: g.label }), h('span', { class: 'sfx-hint', text: g.hint })),
+			g.ids, tryBtn(g.test || null, g.label)));
+			continue;
+		}
+		const isOpen = S.openSfx.has(g.id);
+		const kids = h('div', { class: 'sfx-kids', hidden: !isOpen });
+		for (const id of g.ids) {
+			const label = REACTS.find((r) => r.id === id)?.label || id;
+			kids.append(row('kid', h('div', { class: 'sfx-name', text: label }), [id], tryBtn(sfxTest(id), label)));
+		}
+		const caret = h('span', { class: 'sfx-caret', text: isOpen ? '▾' : '▸' });
+		const open = h('button', {
+			type: 'button', class: 'sfx-name sfx-open', 'aria-expanded': String(isOpen),
+			onclick: () => {
+				if (S.openSfx.has(g.id)) S.openSfx.delete(g.id);
+				else S.openSfx.add(g.id);
+				const on = S.openSfx.has(g.id);
+				kids.hidden = !on;
+				caret.textContent = on ? '▾' : '▸';
+				open.setAttribute('aria-expanded', String(on));
+			},
+		}, caret, h('span', { text: g.label }), h('span', { class: 'sfx-hint', text: String(g.ids.length) }));
+		grid.append(row('grp', open, g.ids), kids);
+	}
+	paint();
+
+	// where "you" is, and when Desktop Audio records it (then the stream hears all of it)
+	const dev = mon.device && mon.device !== 'Default' ? `“${mon.device}”` : 'your default output';
+	const note = mon.echo
+		? h('div', { class: 'info-box warn' },
+			h('b', { text: 'Your stream hears what you hear. ' }),
+			`“${mon.capture || 'Desktop Audio'}” records ${dev}, where OBS plays what you hear, so sounds set to only you reach the stream too. `,
+			'Pick another Monitoring Device in OBS (Settings → Audio → Advanced) to keep them to yourself.')
+		: h('div', { class: 'info-box' },
+			`You hear it on ${dev}, OBS’s Monitoring Device (Settings → Audio → Advanced). `,
+			S.data.no_echo ? '' : 'If Desktop Audio records that device too, sounds set to both reach the stream twice. ',
+			'A mixer that sends that device to your stream (SteelSeries Sonar, Wave Link, Voicemeeter) makes the stream hear those too.');
+
+	return h('div', { class: 'sfx-wrap' }, grid, note);
+}
+
 function buildPetHabitsSection(src) {
 	const cfg = src.settings;
 
-	// OBS 32+ stops the echo itself (Desktop Audio on the monitoring device gets the pet once), so
-	// "Me & stream" is always safe there. "Only me" is gone in OBS 33; it stays only for a pet set to it.
-	const noEcho = !!S.data.no_echo;
-	const hearNotes = {
-		both: noEcho
-			? 'You hear it, and your stream gets it once. OBS stops any echo from your desktop audio by itself.'
-			: 'Your stream, and you through OBS monitoring. If OBS also captures your desktop audio, pick Stream only to avoid an echo.',
-		stream: noEcho ? 'Your stream and recordings only. You won’t hear it.' : 'Your stream and recordings only.',
-		me: 'Only you, through OBS monitoring.',
-		off: 'Silent.',
-	};
-	const hearNow = cfg.hear || 'both';
-	const hearNoteEl = h('div', { class: 'info-box', text: hearNotes[hearNow] || hearNotes.both });
-
+	const hasSounds = !!src.meta?.pack_has_sounds;
 	const soundCard = h('div', { class: 'card' },
 		h('div', { class: 'card-hd' },
 			h('h3', { text: 'Sound' }),
-			h('span', { class: 'card-desc', text: src.meta?.pack_has_sounds ? 'Volume: OBS Audio Mixer' : 'This character has no sounds' }),
+			h('span', { class: 'card-desc', text: hasSounds ? 'Stream volume: the pet’s fader in OBS’s Audio Mixer' : 'This character has no sounds' }),
 		),
 		h('div', { class: 'card-body' },
-			makeSegRow('Who hears it', null, [
-				['both', 'Me & stream'],
-				['stream', 'Stream only'],
-				...(!noEcho || hearNow === 'me' ? [['me', 'Only me']] : []),
-				['off', 'Off'],
-			], hearNow, (v) => {
-				hearNoteEl.textContent = hearNotes[v] || '';
-				patchSource(src.name, { hear: v }, { immediate: true });
+			buildSoundGrid(src),
+			makeSliderRow('Your volume', 'What you hear, on top of the pet’s fader. Muting the pet mutes both.', {
+				value: Math.round(Number(cfg.ear_vol ?? 1) * 100),
+				min: 0, max: 200, step: 5,
+				format: (v) => `${v}%`,
+				onChange: (v, imm) => patchSource(src.name, { ear_vol: v / 100 }, { immediate: imm }),
 			}),
-			hearNoteEl,
 		),
 	);
 

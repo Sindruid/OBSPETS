@@ -84,6 +84,10 @@ static const struct {
 	{"yank", "Chat: rips a message out"},
 };
 
+// Who hears each reaction's sounds: "sfx_<id>" (both, stream, me or off) for every REACTS id and
+// these two. Unset: the source's "hear".
+static const char *SFX_MORE[] = {"automod", "idle"};   // Auto mod ripping a message out, and its own doings
+
 static std::string do_key(const char *id, int slot)
 {
 	return slot_key((std::string("do_") + id).c_str(), slot);
@@ -371,62 +375,47 @@ bool obs_prevents_monitoring_echo()
 	return obs_get_version() >= MAKE_SEMANTIC_VERSION(32, 0, 0);
 }
 
-// "Who hears it" is OBS's audio monitoring for the source (on the UI thread, which owns it). Off
-// leaves it as it was: the pet just makes no sound.
-void set_monitoring(obs_source_t *src, Hear h)
-{
-	if (h == Hear::Off)
-		return;
-	obs_queue_task(
-		OBS_TASK_UI,
-		[](void *p) {
-			auto *a = static_cast<std::pair<obs_weak_source_t *, Hear> *>(p);
-			if (obs_source_t *s = obs_weak_source_get_source(a->first)) {
-				apply_monitoring(s, a->second);
-				obs_source_release(s);
-			}
-			obs_weak_source_release(a->first);
-			delete a;
-		},
-		new std::pair<obs_weak_source_t *, Hear>(obs_source_get_weak_source(src), h),
-		false);
-}
-
-// On the first frame. A Pet saved by 0.1 (which had no sound) comes back with no audio tracks at
-// all, and loading a scene sets the tracks and monitoring from the save after the source is made.
-// So this waits for the first frame (this thread), and hands it to the UI thread, where it runs
-// after the loading. The first time: every audio track, and "who hears it". After that, monitoring
-// picked in Advanced Audio Properties is what "who hears it" then says.
-static void first_audio(obs_source_t *src, bool first, Hear want)
+// The source itself is the stream's side, so it's never monitored; its ears are the streamer's,
+// always monitored (audio.hpp). On the UI thread, which owns monitoring.
+static void set_sides(obs_source_t *src, obs_source_t *ears, bool all_tracks)
 {
 	struct A {
-		obs_weak_source_t *w;
-		bool first;
-		Hear want;
+		obs_weak_source_t *w, *e;
+		bool all;
 	};
 	obs_queue_task(
 		OBS_TASK_UI,
 		[](void *p) {
 			auto *a = static_cast<A *>(p);
 			if (obs_source_t *s = obs_weak_source_get_source(a->w)) {
-				if (a->first) {
+				if (a->all)
 					obs_source_set_audio_mixers(s, 0x3F);
-					if (a->want != Hear::Off)
-						apply_monitoring(s, a->want);
-				} else if (a->want != Hear::Off) {
-					const char *got = read_monitoring(s);
-					if (hear_of(got) != a->want) {
-						Data u = data_new();
-						obs_data_set_string(u.get(), "hear", got);
-						obs_source_update(s, u.get());
-					}
+				if (strcmp(read_monitoring(s), "stream") != 0) {
+					info("%s: monitoring off (who hears each sound is set in OBSPETS Settings, Sound)",
+					     obs_source_get_name(s));
+					apply_monitoring(s, Hear::Stream);
 				}
 				obs_source_release(s);
 			}
+			if (obs_source_t *e = a->e ? obs_weak_source_get_source(a->e) : nullptr) {
+				if (strcmp(read_monitoring(e), "stream") == 0)
+					apply_monitoring(e, Hear::Me);
+				obs_source_release(e);
+			}
 			obs_weak_source_release(a->w);
+			obs_weak_source_release(a->e);
 			delete a;
 		},
-		new A{obs_source_get_weak_source(src), first, want}, false);
+		new A{obs_source_get_weak_source(src), ears ? obs_source_get_weak_source(ears) : nullptr, all_tracks}, false);
+}
+
+// On the first frame. A Pet saved by 0.1 (which had no sound) comes back with no audio tracks at
+// all, and loading a scene sets the tracks and monitoring from the save after the source is made.
+// So this waits for the first frame (this thread), and hands it to the UI thread, where it runs
+// after the loading. The first time: every audio track. Every time: the two sides (set_sides).
+static void first_audio(obs_source_t *src, obs_source_t *ears, bool first)
+{
+	set_sides(src, ears, first);
 }
 
 // ------------------------------------------------------------------ settings
@@ -498,7 +487,9 @@ void PetSource::defaults(obs_data_t *s)
 	obs_data_set_string(f.get(), "face", strcmp(text_id(), "text_gdiplus") == 0 ? "Segoe UI Semibold" : "Sans Serif");
 	obs_data_set_int(f.get(), "size", 26);
 	obs_data_set_default_obj(s, "label_font", f.get());
-	obs_data_set_default_string(s, "hear", "both");   // (alert overlays can read it: "me" and "off" mean the stream doesn't hear the pet)
+	// (alert overlays read these: "me" and "off" mean the stream doesn't hear the pet)
+	obs_data_set_default_string(s, "hear", "both");
+	obs_data_set_default_double(s, "ear_vol", 1.0);
 	obs_data_set_default_string(s, "test_pick", "follow");
 	obs_data_set_default_string(s, "test_more", "mood:happy");
 	obs_data_set_default_bool(s, "advanced", false);
@@ -604,6 +595,16 @@ void Pet::update(obs_data_t *s)
 		}
 	}
 	hear = hear_of(str(s, "hear"));
+	sfx.clear();
+	auto route = [&](const char *id) {
+		std::string key = std::string("sfx_") + id;
+		if (obs_data_has_user_value(s, key.c_str()))
+			sfx[id] = hear_of(str(s, key.c_str()));
+	};
+	for (auto &r : REACTS)
+		route(r.id);
+	for (const char *id : SFX_MORE)
+		route(id);
 	owner->scene_t = 0;   // (look at the scene again: the chat, alert or kept-off sources may have changed)
 
 	// what the chat-mood engine needs from this Pet
@@ -673,6 +674,7 @@ Pet::Pet(PetSource *o, int sl, obs_data_t *settings) : owner(o), slot(sl), sourc
 		p_alpha = gs_effect_get_param_by_name(effect, "alpha");
 	}
 	mixer = o->mixer.get();
+	ears = o->ear_mixer.get();
 	update(settings);
 	Data font(obs_data_get_obj(settings, "label_font"));
 	lname = text_source("obspet label name", font.get());
@@ -694,6 +696,11 @@ PetSource::PetSource(obs_data_t *settings, obs_source_t *src) : source(src)
 		H = ovi.base_height;
 	}
 	mixer = std::make_unique<Mixer>(src);
+	ears = create_ears(obs_source_get_name(src));
+	if (ears)
+		ear_mixer = std::make_unique<Mixer>(ears);
+	else
+		warn("couldn't make the source for what you hear: sounds set to you only won't play");
 	// Once, the first time this version runs it: every audio track (see tick: setup_audio).
 	if (!obs_data_get_bool(settings, "audio_set")) {
 		obs_data_set_bool(settings, "audio_set", true);
@@ -755,6 +762,8 @@ PetSource::PetSource(obs_data_t *settings, obs_source_t *src) : source(src)
 PetSource::~PetSource()
 {
 	mixer.reset();             // (its thread stops before the pets go)
+	ear_mixer.reset();
+	destroy_ears(ears);
 	Hub::get().remove(this);   // (after this, no hub thread calls into it)
 	{
 		std::lock_guard<std::mutex> g(g_pets_mu);
@@ -766,10 +775,8 @@ PetSource::~PetSource()
 
 void PetSource::update(obs_data_t *s)
 {
-	Hear h = hear_of(str(s, "hear"));
-	if (hear_set && h != hear)
-		set_monitoring(source, h);   // (before the first frame, tick does it)
-	hear = h;
+	hear = hear_of(str(s, "hear"));
+	ear_trim = std::clamp(obs_data_get_double(s, "ear_vol"), 0.0, 2.0);
 
 	std::string w = str(s, "who");
 	who = w == "random" ? Who::Random : w == "all" ? Who::All : Who::Turns;
@@ -1147,8 +1154,25 @@ void PetSource::tick(float seconds)
 {
 	if (!hear_set) {
 		hear_set = true;
-		first_audio(source, setup_audio, hear);
+		first_audio(source, ears, setup_audio);
 		setup_audio = false;
+	}
+	if (ears) {
+		// what the streamer hears follows the Pet's fader and mute, times its own volume
+		float v = (float)(obs_source_get_volume(source) * ear_trim);
+		if (v != ear_vol_set)
+			obs_source_set_volume(ears, ear_vol_set = v);
+		int m = obs_source_muted(source) ? 1 : 0;
+		if (m != ear_mute_set)
+			obs_source_set_muted(ears, (ear_mute_set = m) != 0);
+	}
+	// monitoring turned on for the Pet itself (Advanced Audio Properties) would play the stream's
+	// side to the streamer too: back off
+	mon_t -= seconds;
+	if (mon_t <= 0) {
+		mon_t = 2;
+		if (strcmp(read_monitoring(source), "stream") != 0)
+			set_sides(source, ears, false);
 	}
 	std::vector<std::function<void(PetSource &)>> in;
 	{

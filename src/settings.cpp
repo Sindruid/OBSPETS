@@ -455,6 +455,9 @@ HttpResp handle_state(const HttpReq &r)
 	o += "\"version\":" + jstr(PLUGIN_VERSION);
 	o += ",\"backend\":" + jstr(Hub::backend());
 	o += std::string(",\"no_echo\":") + (obs_prevents_monitoring_echo() ? "true" : "false");
+	// where "you" hear the pet, and whether Desktop Audio records that too (then the stream does)
+	o += ",\"monitor\":{\"device\":" + jstr(monitor_device_name()) + ",\"capture\":" + jstr(monitor_capture_name()) +
+	     ",\"echo\":" + (monitor_reaches_stream() ? "true" : "false") + "}";
 	o += ",\"default_bots\":" + jstr(DEFAULT_BOTS);
 	o += ",\"account\":" + account_json(st);
 	o += ",\"sources\":" + sources_json;

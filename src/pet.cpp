@@ -18,30 +18,51 @@ static double fl(double v) { return std::floor(v + 0.5); }
 
 // ------------------------------------------------------------------ sounds
 
-// The Pet plays its sounds itself (audio.cpp). Each file is decoded the first time it plays; one that won't decode stays silent, said once.
-static bool play_file(Pet &d, const std::string &path)
+// Who hears a sound of reaction `kind` ("": the pet's own doings, "idle"): its "sfx_<id>", or the
+// source's "hear".
+static Hear route(const Pet &d, const std::string &kind)
 {
-	if (!d.mixer)
+	auto it = d.sfx.find(kind.empty() ? "idle" : kind);
+	return it != d.sfx.end() ? it->second : d.hear;
+}
+
+// The Pet plays its sounds itself (audio.cpp): to the stream, the streamer or both (`h`). Each file
+// is decoded the first time it plays; one that won't decode stays silent, said once.
+static bool play_file(Pet &d, const std::string &path, Hear h)
+{
+	bool me = h == Hear::Both || h == Hear::Me, stream = h == Hear::Both || h == Hear::Stream;
+	if (!d.ears)
+		me = false;
+	// Desktop Audio records what the streamer hears (OBS 32+ says so): the stream gets the
+	// streamer's copy through it, so a second copy would be an echo
+	if (me && stream && monitor_reaches_stream())
+		stream = false;
+	Mixer *m = stream ? d.mixer : me ? d.ears : nullptr;
+	if (!m)
 		return false;
 	auto it = d.clips.find(path);
 	if (it == d.clips.end()) {
 		std::string err;
-		ClipPtr c = load_wav(path, d.mixer->rate(), err);
+		ClipPtr c = load_wav(path, m->rate(), err);
 		if (!c)
 			warn("can't play %s: %s", path.c_str(), err.c_str());
 		it = d.clips.emplace(path, c).first;
 	}
 	if (!it->second)
 		return false;
-	d.mixer->play(it->second);
+	if (stream)
+		d.mixer->play(it->second);
+	if (me)
+		d.ears->play(it->second);   // (the same rate: both are OBS's)
 	return true;
 }
 
 // Chat moods can come every few seconds, so a mood only makes a voice sound twice the account's
 // time between reactions (10 s at least) after its last one. Alerts and channel-point pets always do. Foley is never held back.
-bool sound(Pet &d, const std::string &key, bool from_mood)
+bool sound(Pet &d, const std::string &key, bool from_mood, const char *kind)
 {
-	if (!d.pack || d.hear == Hear::Off)
+	Hear h = route(d, kind ? std::string(kind) : d.act);
+	if (!d.pack || h == Hear::Off)
 		return false;
 	auto it = d.pack->sounds.find(key);
 	if (it == d.pack->sounds.end() || it->second.files.empty())
@@ -59,7 +80,7 @@ bool sound(Pet &d, const std::string &key, bool from_mood)
 		k = (k + 1) % n;
 	d.last_file[key] = k;
 	const std::string &path = snd.files[k];
-	if (!play_file(d, path))
+	if (!play_file(d, path, h))
 		return false;
 	if (voice)
 		d.voiced = d.now;
@@ -797,6 +818,7 @@ static double sleepiness(Pet &d)
 void decide(Pet &d)
 {
 	d.busy = false;
+	d.act.clear();   // (its own doings from here on)
 	double z = sleepiness(d), e = d.energy;
 	struct Act {
 		double w;
@@ -1762,10 +1784,11 @@ void petted(Pet &d, const std::string &user, const std::string &color)
 {
 	set_label(d, user.empty() ? "someone" : user, color);
 	hearts(d, 3);
-	sound(d, "pet");   // asleep too: it purrs in its sleep
+	sound(d, "pet", false, "pet");   // asleep too: it purrs in its sleep (whatever else it's doing)
 	d.bobbing = true, d.bob = 0;
 	if (d.busy || d.anim == "sleep" || d.mode != Mode::Ground)
 		return;
+	d.act = "pet";   // (its hop and landing are the channel points' too)
 	double r = rnd(0, 1);
 	if (r < 0.45)
 		chain(d, {hold("idle", 0.3), loops("clean", 1), hold("idle", 1)});
@@ -1790,6 +1813,7 @@ void react(Pet &d)
 		d.burst_n += 1;
 		// a sudden rush of messages wakes it, once it has had a bit of a nap
 		if (d.burst_n > 6 && napped(d) > NAP_GRACE && d.anim == "sleep" && d.mode == Mode::Ground && !d.busy && d.can("startled")) {
+			d.act = "startled";
 			startled(d);
 			d.bobbing = true, d.bob = 0;
 		}
@@ -1858,6 +1882,7 @@ void react(Pet &d)
 		Alert a = d.next_alert;
 		interrupt(d);
 		d.voice = "alert";
+		d.act = a.kind;
 		if (!run_alert(d, a.kind, a.n))
 			idle_then_decide(d);
 	}
@@ -1880,6 +1905,7 @@ void react(Pet &d)
 		}
 		info("pet: mood %s", m.kind.c_str());
 		d.voice = "mood";
+		d.act = m.kind == "yank" && m.strike ? "automod" : m.kind;
 		if (!(d.anim == "sleep" && (m.kind == "love" || m.kind == "sleepy")))
 			interrupt(d);
 		if (m.kind == "yank") {
@@ -2026,12 +2052,12 @@ void tick_motion(Pet &d, double dt)
 		if (d.pounce_yank && d.mode == Mode::Air && d.air >= d.T * 0.85) {
 			d.pounce_yank = false;
 			burst(d, y.x, y.y);
-			sound(d, "pop");
+			sound(d, "pop", false, y.strike ? "automod" : "yank");
 			d.has_yank = false;
 		} else if (d.now - y.t0 > 20 || (!y.msg_id.empty() && Hub::get().gone(y.msg_id))) {
 			// left lying (an alert cut in), or deleted by a mod while it flies: it fizzles out
 			burst(d, y.x, y.y);
-			sound(d, "pop");
+			sound(d, "pop", false, y.strike ? "automod" : "yank");
 			d.has_yank = false;
 		}
 	}
@@ -2048,6 +2074,7 @@ void leave_stage(Pet &d, int dir)
 	d.label_on = false;
 	d.busy = true;
 	d.leaving = true;
+	d.act.clear();
 	auto jump = [dir](Pet &p) {
 		sound(p, "notice");
 		leap(p, dir < 0 ? -p.half * 3 : p.W + p.half * 3, p.floorY, On::Floor, 34 * p.S, [](Pet &q) {
@@ -2071,6 +2098,7 @@ void enter_stage(Pet &d, int dir)
 	d.leaving = d.busy = false;
 	d.has_alert = d.has_mood = d.has_pet = d.has_yank_msg = d.has_yank = false;
 	d.label_on = false;
+	d.act.clear();
 	interrupt(d);
 	d.mode = Mode::Ground;
 	d.on = On::Floor;

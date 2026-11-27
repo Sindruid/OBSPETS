@@ -52,7 +52,11 @@ OBSPETS Chat is the page in `data/chat/`, loaded in a private browser source.
 ## Pet properties
 
 - **Sign-in status** at the top, with the next step. If a sign-in is missing a permission added later, it says so and offers to sign in again (`Hub::check_scopes`).
-- **Who hears it:** you and your stream, only your stream, or nobody. This is the source's audio monitoring. On OBS 32 and newer there's no echo to worry about: when Desktop Audio captures the device you monitor on, OBS gives the stream the pet once. On OBS 31 the page also offers "only you" and warns about the echo.
+- **Who hears it** (Sound & Habits on the settings page): each reaction's sounds go to you, your stream, both or nobody. A grid has a row for everything, one per group (Alerts and Chat reactions open to a row per reaction, Auto mod, and "On its own" for landings and coming and going), and a You and a Stream switch on each row. Settings keys: `sfx_<id>` (`both`, `me`, `stream` or `off`) for each reaction id, `automod` and `idle`. An unset one uses `hear`, the one setting for every sound that older versions had. `ear_vol` is "Your volume".
+  - **Stream:** the OBSPETS source itself, on the audio tracks. It's never monitored: the plugin turns monitoring off if it's turned on in Advanced Audio Properties.
+  - **You:** a private source each OBSPETS source keeps (`obspet_ears`, `src/audio.cpp`). It's monitored, in no scene and on no track, so OBS never sends it to the stream. Its volume and mute follow the OBSPETS fader, times "Your volume".
+  - On OBS 32 and newer, when an Audio Output Capture (Desktop Audio) records the monitoring device, OBS says so (`deduplication_changed`). Then the stream gets whatever you hear through that capture, so a sound set to both plays only on your side (no echo), and the page warns that sounds set to only you reach the stream too. OBS 31 doesn't say: a sound set to both then reaches the stream twice.
+  - The alert overlay (`sources/alerts/`) reads the same keys to decide whether the pet's own sound stands in for an alert's.
 - **Try a reaction** plays reactions for testing. "Someone says hi in chat" goes through the real chat model and uses a little credit.
 - **Moved or resized:** the pet source is meant to fill the canvas. If its box is moved or scaled, it still maps the chat and other sources into its own pixels, and offers **Fit it to the screen**.
 - **How often it reacts to chat:** Rarely, Sometimes or Often (at most every 60, 15 or 8 s).
@@ -88,6 +92,7 @@ To publish an update, bump `buildspec.json`, rebuild, run `tools/package.py`, th
 - Extra canvases (OBS 31+ vertical setups) aren't supported. The pet uses the main canvas.
 - The sign-in (`account.json`) is encrypted with DPAPI for the Windows user, so it can't be copied to another PC or user.
 - Uninstalling deletes the local sign-in but doesn't sign the OBS out on the website.
+- When Desktop Audio records the monitoring device, a sound set to both plays only on your side, and the stream gets it through Desktop Audio. A recording track without Desktop Audio on it then misses that sound. (OBS's own echo fix goes track by track; one source's sound can't.)
 
 ## Building (Windows x64)
 
