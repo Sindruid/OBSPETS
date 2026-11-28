@@ -8,6 +8,7 @@
 
 #include <obs-module.h>
 
+#include <atomic>
 #include <condition_variable>
 #include <memory>
 #include <mutex>
@@ -34,6 +35,7 @@ public:
 	explicit Mixer(obs_source_t *source);
 	~Mixer();
 	void play(ClipPtr c);   // any thread
+	void set_gain(float g) { gain_ = g; }   // any thread: everything it plays, times this
 	uint32_t rate() const { return rate_; }
 
 private:
@@ -48,6 +50,7 @@ private:
 	std::condition_variable cv_;
 	std::vector<Voice> voices_;
 	bool stop_ = false;
+	std::atomic<float> gain_{1.0f};
 	std::thread thread_;
 };
 

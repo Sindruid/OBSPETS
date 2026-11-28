@@ -217,6 +217,7 @@ const state = {
 				hear: 'both',
 				sfx_happy: 'stream', sfx_zoomies: 'off',   // (a couple set apart, to show "mixed")
 				ear_vol: 1,
+				stream_vol: 1,
 				naps: 1,
 				energy: 1,
 				label_after: ' pet {name}',

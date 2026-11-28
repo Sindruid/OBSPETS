@@ -184,9 +184,10 @@ void Mixer::loop()
 		voices_.erase(std::remove_if(voices_.begin(), voices_.end(), [](const Voice &v) { return v.pos >= v.c->l.size(); }),
 			      voices_.end());
 		lk.unlock();
-		for (uint32_t i = 0; i < n; i++) {   // overlapping sounds: never past full scale
-			L[i] = std::clamp(L[i], -1.0f, 1.0f);
-			R[i] = std::clamp(R[i], -1.0f, 1.0f);
+		const float g = gain_;
+		for (uint32_t i = 0; i < n; i++) {   // overlapping sounds (or a gain over 1): never past full scale
+			L[i] = std::clamp(L[i] * g, -1.0f, 1.0f);
+			R[i] = std::clamp(R[i] * g, -1.0f, 1.0f);
 		}
 		if (!t)
 			t = os_gettime_ns();

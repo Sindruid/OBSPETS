@@ -1,5 +1,7 @@
 # OBSPETS character packs
 
+(Get OBSPETS at [sindruid.com/streamtools/obspets](https://sindruid.com/streamtools/obspets).)
+
 The Pet source draws whichever character you pick under **Character** in its properties. Each character is a **pack**: a folder holding a `pack.lua`, a sprite sheet and, optionally, sounds.
 
 ## Where packs go

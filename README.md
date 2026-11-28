@@ -1,5 +1,9 @@
 # OBSPETS plugin
 
+> **Looking for OBSPETS itself?** Get the installer, see the pets in action and read the FAQ at **[sindruid.com/streamtools/obspets](https://sindruid.com/streamtools/obspets)**.
+>
+> This repository is only the plugin's source code. It has no downloads.
+
 OBSPETS is an OBS Studio plugin (Windows only) that adds a pet to your scene. It reacts to follows, subs, bits, raids, channel points and chat on Twitch and Kick.
 
 It adds:
@@ -52,8 +56,8 @@ OBSPETS Chat is the page in `data/chat/`, loaded in a private browser source.
 ## Pet properties
 
 - **Sign-in status** at the top, with the next step. If a sign-in is missing a permission added later, it says so and offers to sign in again (`Hub::check_scopes`).
-- **Who hears it** (Sound & Habits on the settings page): each reaction's sounds go to you, your stream, both or nobody. A grid has a row for everything, one per group (Alerts and Chat reactions open to a row per reaction, Auto mod, and "On its own" for landings and coming and going), and a You and a Stream switch on each row. Settings keys: `sfx_<id>` (`both`, `me`, `stream` or `off`) for each reaction id, `automod` and `idle`. An unset one uses `hear`, the one setting for every sound that older versions had. `ear_vol` is "Your volume".
-  - **Stream:** the OBSPETS source itself, on the audio tracks. It's never monitored: the plugin turns monitoring off if it's turned on in Advanced Audio Properties.
+- **Who hears it** (Sound & Habits on the settings page): each reaction's sounds go to you, your stream, both or nobody. A grid has a row for everything, one per group (Alerts and Chat reactions open to a row per reaction, Auto mod, and "On its own" for landings and coming and going), and a You and a Stream switch on each row. Settings keys: `sfx_<id>` (`both`, `me`, `stream` or `off`) for each reaction id, `automod` and `idle`. An unset one uses `hear`, the one setting for every sound that older versions had. `stream_vol` and `ear_vol` are "Stream volume" and "Your volume" (0 to 2, on top of the fader).
+  - **Stream:** the OBSPETS source itself, on the audio tracks, at its fader times "Stream volume". It's never monitored: the plugin turns monitoring off if it's turned on in Advanced Audio Properties.
   - **You:** a private source each OBSPETS source keeps (`obspet_ears`, `src/audio.cpp`). It's monitored, in no scene and on no track, so OBS never sends it to the stream. Its volume and mute follow the OBSPETS fader, times "Your volume".
   - On OBS 32 and newer, when an Audio Output Capture (Desktop Audio) records the monitoring device, OBS says so (`deduplication_changed`). Then the stream gets whatever you hear through that capture, so a sound set to both plays only on your side (no echo), and the page warns that sounds set to only you reach the stream too. OBS 31 doesn't say: a sound set to both then reaches the stream twice.
   - The alert overlay (`sources/alerts/`) reads the same keys to decide whether the pet's own sound stands in for an alert's.
@@ -95,6 +99,8 @@ To publish an update, bump `buildspec.json`, rebuild, run `tools/package.py`, th
 - When Desktop Audio records the monitoring device, a sound set to both plays only on your side, and the stream gets it through Desktop Audio. A recording track without Desktop Audio on it then misses that sound. (OBS's own echo fix goes track by track; one source's sound can't.)
 
 ## Building (Windows x64)
+
+To use OBSPETS you don't need to build it: the installer is at [sindruid.com/streamtools/obspets](https://sindruid.com/streamtools/obspets).
 
 You need Visual Studio 2022 with **Desktop development with C++** and Windows SDK 10.0.22621, and CMake 3.28 or newer (Visual Studio ships one).
 

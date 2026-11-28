@@ -2455,11 +2455,20 @@ function buildPetHabitsSection(src) {
 	const soundCard = h('div', { class: 'card' },
 		h('div', { class: 'card-hd' },
 			h('h3', { text: 'Sound' }),
-			h('span', { class: 'card-desc', text: hasSounds ? 'Stream volume: the pet’s fader in OBS’s Audio Mixer' : 'This character has no sounds' }),
+			h('span', { class: 'card-desc', text: hasSounds ? 'Both volumes follow the pet’s fader in OBS’s Audio Mixer' : 'This character has no sounds' }),
 		),
 		h('div', { class: 'card-body' },
 			buildSoundGrid(src),
-			makeSliderRow('Your volume', 'What you hear, on top of the pet’s fader. Muting the pet mutes both.', {
+			// (when Desktop Audio records what you hear, a sound for both reaches the stream that way, at your volume)
+			makeSliderRow('Stream volume', S.data.monitor?.echo
+				? 'What your stream hears. Sounds set to both reach it through Desktop Audio, so Your volume sets those.'
+				: 'What your stream and recordings hear.', {
+				value: Math.round(Number(cfg.stream_vol ?? 1) * 100),
+				min: 0, max: 200, step: 5,
+				format: (v) => `${v}%`,
+				onChange: (v, imm) => patchSource(src.name, { stream_vol: v / 100 }, { immediate: imm }),
+			}),
+			makeSliderRow('Your volume', 'What you hear. Muting the pet mutes both.', {
 				value: Math.round(Number(cfg.ear_vol ?? 1) * 100),
 				min: 0, max: 200, step: 5,
 				format: (v) => `${v}%`,

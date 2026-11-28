@@ -490,6 +490,7 @@ void PetSource::defaults(obs_data_t *s)
 	// (alert overlays read these: "me" and "off" mean the stream doesn't hear the pet)
 	obs_data_set_default_string(s, "hear", "both");
 	obs_data_set_default_double(s, "ear_vol", 1.0);
+	obs_data_set_default_double(s, "stream_vol", 1.0);
 	obs_data_set_default_string(s, "test_pick", "follow");
 	obs_data_set_default_string(s, "test_more", "mood:happy");
 	obs_data_set_default_bool(s, "advanced", false);
@@ -777,6 +778,8 @@ void PetSource::update(obs_data_t *s)
 {
 	hear = hear_of(str(s, "hear"));
 	ear_trim = std::clamp(obs_data_get_double(s, "ear_vol"), 0.0, 2.0);
+	if (mixer)   // the stream's side: the source's own fader, times this
+		mixer->set_gain((float)std::clamp(obs_data_get_double(s, "stream_vol"), 0.0, 2.0));
 
 	std::string w = str(s, "who");
 	who = w == "random" ? Who::Random : w == "all" ? Who::All : Who::Turns;
